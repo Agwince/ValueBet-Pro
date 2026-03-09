@@ -22,7 +22,12 @@ def init_connection():
 sheet = init_connection()
 users_sheet = sheet.worksheet("Users")
 pending_sheet = sheet.worksheet("Pending")
-results_sheet = sheet.worksheet("Results") # Added your new tab!
+
+# Fail-safe check for the Results tab
+try:
+    results_sheet = sheet.worksheet("Results")
+except:
+    results_sheet = None
 
 if 'current_user' not in st.session_state:
     st.session_state.current_user = None
@@ -37,7 +42,23 @@ def get_all_pending():
     return pending_sheet.get_all_records()
 
 def get_all_results():
-    return results_sheet.get_all_records()
+    if results_sheet:
+        return results_sheet.get_all_records()
+    return []
+
+def check_expiry(user_record):
+    expiry_date = datetime.strptime(user_record['expiry'], "%Y-%m-%d").date()
+    today = datetime.now().date()
+    return today <= expiry_date
+
+# API Functions
+def get_live_odds(sport_key, api_key):
+    url = f'https://api.the-odds-api.com/v4/sports/{sport_key}/odds'
+    params = {'api_key': api_key, 'regions': 'eu,uk', 'markets': 'h2h,totals', 'oddsFormat': 'decimal'}
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        return response.json()
+    return None
 
 def calculate_true_odds(pinnacle_odds):
     implied_probs = {outcome: (1 / odds) for outcome, odds in pinnacle_odds.items()}
@@ -53,12 +74,15 @@ def check_safe_accumulators(bookies, market_key, point, true_odds, match, safe_b
         if bookie['key'] == 'pinnacle': continue
         soft_market = next((m for m in bookie.get('markets', []) if m['key'] == market_key), None)
         if not soft_market: continue
+        
         for outcome in soft_market['outcomes']:
             if point and outcome.get('point') != point: continue
             bet_type = outcome['name']
             soft_price = outcome['price']
             fair_price = true_odds.get(bet_type)
             if not fair_price: continue
+            
+            # THE LEGIT FILTER: High probability safe bets (1.10 to 1.85 odds)
             if fair_price >= 1.10 and fair_price <= 1.85:
                 market_display = f"{bet_type} {point}" if point else f"To Win: {bet_type}"
                 safe_bets_found.append({
@@ -72,25 +96,25 @@ def check_safe_accumulators(bookies, market_key, point, true_odds, match, safe_b
 # ==========================================
 # 3. PAGES
 # ==========================================
+
 def results_page():
-    st.title("📊 Verified Profit History")
-    st.markdown("Unlike other sites, we show every single win and loss. Transparency is our priority.")
+    st.header("📊 Verified Profit History")
+    st.markdown("Transparency is our priority. We log every win and loss to keep the system legit.")
     
     data = get_all_results()
     if not data:
-        st.info("Results will appear here as soon as the first verified match finishes!")
+        st.info("Verified results are being compiled. Log your first wins in the Admin panel!")
     else:
         df = pd.DataFrame(data)
-        
-        # Calculate stats for the top of the page
-        total_bets = len(df)
+        # Stats summary
+        total = len(df)
         wins = len(df[df['Outcome (Win/Loss)'].str.lower() == 'win'])
-        win_rate = round((wins / total_bets) * 100, 1) if total_bets > 0 else 0
+        rate = round((wins / total) * 100, 1) if total > 0 else 0
         
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Bets Verified", total_bets)
-        col2.metric("Verified Wins", wins)
-        col3.metric("Win Rate", f"{win_rate}%")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Bets", total)
+        c2.metric("Wins", wins)
+        c3.metric("Verified Win Rate", f"{rate}%")
         
         st.divider()
         st.dataframe(df, use_container_width=True, hide_index=True)
@@ -99,36 +123,45 @@ def home_and_register():
     st.title("🤖 ValueBet Algorithm Pro")
     st.markdown("### The Smart Money Sports Betting Scanner")
     
-    # Navigation for public users
-    tab1, tab2 = st.tabs(["Home & Login", "Verified Results"])
+    # Public Tabs for Trust
+    tab_login, tab_verify = st.tabs(["🔓 Login & Join", "📊 Verified Results"])
     
-    with tab1:
-        st.success("🔥 Yesterday's Results: 4/5 Value Bets Won. (+6.2 Units)")
+    with tab_login:
+        st.success("🔥 Join 978+ Smart Bettors using mathematical edge. No more guessing.")
         st.divider()
         col1, col2 = st.columns(2)
         with col1:
-            st.header("🔓 Login")
+            st.header("Login")
             login_user = st.text_input("Username", key="log_user")
             login_pass = st.text_input("Password", type="password", key="log_pass")
             if st.button("Log In"):
                 users = get_all_users()
+                user_found = False
                 for u in users:
                     if str(u['username']) == login_user and str(u['password']) == login_pass:
+                        user_found = True
                         if u['status'] == 'active':
-                            st.session_state.current_user = login_user
-                            st.rerun()
-                st.error("Invalid Username, Password, or account not yet active.")
+                            if check_expiry(u):
+                                st.session_state.current_user = login_user
+                                st.rerun()
+                            else:
+                                st.error("Subscription expired.")
+                        else:
+                            st.warning("Account pending approval.")
+                        break
+                if not user_found: st.error("Invalid credentials.")
+
         with col2:
-            st.header("💎 Get Premium Access")
-            st.markdown("**Step 1:** Send payment via M-Pesa Pochi to **07XX-XXX-XXX**.")
-            st.info("💰 **Weekly:** 500 KES | 💰 **Monthly:** 1,500 KES")
-            reg_user = st.text_input("Username")
+            st.header("Get Premium Access")
+            st.markdown("Send M-Pesa Pochi La Biashara to **07XX-XXX-XXX**.")
+            st.info("💰 Weekly: 500 KES | Monthly: 1,500 KES")
+            reg_user = st.text_input("Choose Username")
             mpesa_code = st.text_input("M-Pesa Code", max_chars=10)
             if st.button("Submit Payment", type="primary"):
                 pending_sheet.append_row([reg_user, "password", "Monthly", mpesa_code.upper(), str(datetime.now().date())])
                 st.success("✅ Submitted! Wait 10 mins for activation.")
-    
-    with tab2:
+                
+    with tab_verify:
         results_page()
 
 def admin_dashboard():
@@ -136,22 +169,142 @@ def admin_dashboard():
     if st.button("Logout"):
         st.session_state.current_user = None
         st.rerun()
-    
-    st.subheader("Add a Verified Result")
+        
+    # Result Logger
+    st.subheader("Log A Win/Loss (Publicly)")
     with st.form("result_form"):
         res_date = st.date_input("Match Date")
-        res_match = st.text_input("Match & Market (e.g. Arsenal vs Chelsea - Over 2.5)")
+        res_match = st.text_input("Match & Market")
         res_odds = st.number_input("Odds", min_value=1.01, step=0.01)
         res_outcome = st.selectbox("Outcome", ["Win", "Loss"])
-        res_profit = st.number_input("Profit/Loss (Units)", step=0.1)
-        if st.form_submit_button("Log Result to Database"):
-            results_sheet.append_row([str(res_date), res_match, res_odds, res_outcome, res_profit])
-            st.success("Result logged publicly!")
+        res_pl = st.number_input("Profit/Loss (Units)", step=0.1)
+        if st.form_submit_button("Verified Result Log"):
+            if results_sheet:
+                results_sheet.append_row([str(res_date), res_match, res_odds, res_outcome, res_pl])
+                st.success("Result added to public verified list!")
+            else:
+                st.error("Missing 'Results' tab in Google Sheets.")
+
+    st.divider()
+    st.subheader("Pending M-Pesa Payments")
+    pending_data = get_all_pending()
+    if not pending_data: st.info("No pending payments.")
+    else:
+        for idx, p in enumerate(pending_data):
+            st.write(f"**{p['username']}** | Code: {p['mpesa_code']} | Plan: {p['plan']}")
+            if st.button(f"Approve {p['username']}", key=f"app_{idx}"):
+                expiry = (datetime.now() + timedelta(days=30)).date()
+                users_sheet.append_row([p['username'], "password", "user", str(expiry), "active"])
+                pending_sheet.delete_rows(idx + 2)
+                st.rerun()
 
 def premium_bot_dashboard():
-    st.title("📈 Pro Dashboard: Daily Accumulators")
-    if st.button("Logout"):
+    st.title("📈 Pro Dashboard: Smart Slips")
+    if st.button("Logout", use_container_width=True):
         st.session_state.current_user = None
         st.rerun()
+            
     st.divider()
-    # ... (Rest of your premium scanning logic stays the same)
+    st.markdown("### 🚨 Global Market Scanner")
+    st.write("Dynamically scanning active leagues for today's highest-probability matches. No guessing allowed.")
+    
+    if st.button("🔍 Generate Today's Secure Slips", type="primary", use_container_width=True):
+        with st.spinner("Scanning the globe..."):
+            API_KEY = '789faf8bb53e104396c0f8f6b6fba1aa' 
+            
+            # DYNAMIC LEAGUE FETCHER
+            sports_url = f'https://api.the-odds-api.com/v4/sports?api_key={API_KEY}'
+            sports_response = requests.get(sports_url)
+            
+            SPORTS = []
+            if sports_response.status_code == 200:
+                all_sports = sports_response.json()
+                SPORTS = [s['key'] for s in all_sports if 'soccer' in s['key'] and s.get('active')][:15]
+            
+            if not SPORTS:
+                st.error("Could not find active leagues. Please try later.")
+                return
+            
+            safe_bets_found = []
+            for sport in SPORTS:
+                matches = get_live_odds(sport, API_KEY)
+                if not matches: continue
+                for match in matches:
+                    # STRICT TODAY FILTER (Kenyan Time)
+                    EAT_TZ = timezone(timedelta(hours=3))
+                    match_time = datetime.fromisoformat(match['commence_time'].replace('Z', '+00:00'))
+                    if match_time.astimezone(EAT_TZ).date() != datetime.now(EAT_TZ).date():
+                        continue 
+
+                    bookies = match.get('bookmakers', [])
+                    pinnacle_data = next((b for b in bookies if b['key'] == 'pinnacle'), None)
+                    if not pinnacle_data or not pinnacle_data.get('markets'): continue
+                    for market in pinnacle_data['markets']:
+                        pinny_outcomes = market['outcomes']
+                        if market['key'] in ['totals', 'h2h']:
+                            true_odds = calculate_true_odds({i['name']: i['price'] for i in pinny_outcomes})
+                            check_safe_accumulators(bookies, market['key'], pinny_outcomes[0].get('point'), true_odds, match, safe_bets_found)
+            
+            if safe_bets_found:
+                unique_bets = []
+                seen = set()
+                for bet in safe_bets_found:
+                    identifier = f"{bet['Match']}_{bet['Market']}"
+                    if identifier not in seen:
+                        seen.add(identifier)
+                        unique_bets.append(bet)
+                
+                df = pd.DataFrame(unique_bets)
+                df['Odds Value'] = pd.to_numeric(df['Bookie Odds'])
+                df = df.sort_values(by='Odds Value').reset_index(drop=True)
+                
+                # --- DOUBLE BUILDER (Exactly 2 Games) ---
+                st.subheader("🟢 2 Odds Slip (Surest Double)")
+                double_found = False
+                for i in range(len(df)):
+                    for j in range(i + 1, len(df)):
+                        if df.iloc[i]['Match'] != df.iloc[j]['Match']:
+                            combined = df.iloc[i]['Odds Value'] * df.iloc[j]['Odds Value']
+                            if 1.75 <= combined <= 2.50:
+                                slip_2 = pd.DataFrame([df.iloc[i], df.iloc[j]])
+                                st.dataframe(slip_2.drop(columns=['Odds Value']), use_container_width=True, hide_index=True)
+                                st.info(f"**Total Combined Odds:** {round(combined, 2)}")
+                                double_found = True
+                                break
+                    if double_found: break
+                if not double_found: st.write("No 2-match doubles available right now.")
+
+                # --- MULTIBETS (5 & 10 Odds) ---
+                def build_slip(target, available_df):
+                    slip_matches, current_odds, used = [], 1.0, set()
+                    for _, row in available_df.iterrows():
+                        if current_odds < target and row['Match'] not in used:
+                            slip_matches.append(row)
+                            used.add(row['Match'])
+                            current_odds *= row['Odds Value']
+                    return pd.DataFrame(slip_matches), round(current_odds, 2)
+
+                st.subheader("🟡 5 Odds Slip (Value Multibet)")
+                slip_5, odds_5 = build_slip(5.0, df)
+                if not slip_5.empty and odds_5 >= 3.0:
+                    st.dataframe(slip_5.drop(columns=['Odds Value']), use_container_width=True, hide_index=True)
+                    st.info(f"**Total Combined Odds:** {odds_5}")
+
+                st.subheader("🔴 10 Odds Slip (Mega Acca)")
+                slip_10, odds_10 = build_slip(10.0, df)
+                if not slip_10.empty and odds_10 >= 6.0:
+                    st.dataframe(slip_10.drop(columns=['Odds Value']), use_container_width=True, hide_index=True)
+                    st.info(f"**Total Combined Odds:** {odds_10}")
+            else:
+                st.warning("No secure matches today. Math says: Stay safe and skip today!")
+
+# ==========================================
+# 4. ROUTER
+# ==========================================
+if st.session_state.current_user is None:
+    home_and_register()
+else:
+    users = get_all_users()
+    role = next((u['role'] for u in users if str(u['username']) == st.session_state.current_user), "user")
+    if role == 'admin': admin_dashboard()
+    else: premium_bot_dashboard()
