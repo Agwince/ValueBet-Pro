@@ -4,7 +4,7 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 import json
-import requests  # Added for the API
+import requests  
 
 st.set_page_config(page_title="ValueBet Algorithm Pro", layout="wide", page_icon="🤖")
 
@@ -147,14 +147,19 @@ def premium_bot_dashboard():
             st.rerun()
             
     st.divider()
-    st.markdown("### 🚨 Market Scanner")
-    st.write("Click below to scan 5 major leagues for mispriced Over/Under totals. The algorithm mathematically removes Pinnacle's vig to find the true fair odds.")
+    st.markdown("### 🚨 Global Market Scanner")
+    st.write("Click below to scan 15 global leagues for mathematically profitable single bets. Sorted into your daily packages.")
     
     if st.button("🔍 Scan Global Markets (Live API)", type="primary", use_container_width=True):
-        with st.spinner("Fetching Live Odds & Calculating True Expected Value..."):
-            # Your API details
+        with st.spinner("Scanning Global Leagues & Calculating True Expected Value..."):
             API_KEY = '789faf8bb53e104396c0f8f6b6fba1aa' 
-            SPORTS = ['soccer_epl', 'soccer_spain_la_liga', 'soccer_italy_serie_a', 'soccer_germany_bundesliga', 'soccer_france_ligue_one']
+            # UPGRADE: 15 Global leagues for everyday action
+            SPORTS = [
+                'soccer_epl', 'soccer_spain_la_liga', 'soccer_italy_serie_a', 'soccer_germany_bundesliga', 'soccer_france_ligue_one',
+                'soccer_uefa_champs_league', 'soccer_uefa_europa_league', 'soccer_netherlands_eredivisie', 'soccer_portugal_primeira_liga',
+                'soccer_turkey_super_league', 'soccer_brazil_campeonato', 'soccer_usa_mls', 'soccer_mexico_ligamx', 
+                'soccer_japan_j_league', 'soccer_australia_aleague'
+            ]
             
             value_bets_found = []
             
@@ -191,13 +196,13 @@ def premium_bot_dashboard():
                                 
                                 if not fair_price: continue
                                 
-                                # Finding Value: mathematically fair odds <= 2.50 to avoid longshots
-                                if fair_price <= 2.50 and soft_price > fair_price:
+                                # Finding Value Edge (Allowing up to 15.00 fair odds to catch 5-odd and 10-odd longshots)
+                                if fair_price <= 15.00 and soft_price > fair_price:
                                     edge = round(((soft_price / fair_price) - 1) * 100, 2)
                                     if edge >= 2.0:
                                         value_bets_found.append({
                                             "Match": f"{match['home_team']} vs {match['away_team']}",
-                                            "Market": f"{bet_type} {point} Goals",
+                                            "Market": f"{bet_type} {point}",
                                             "True Fair Odds": fair_price,
                                             "Bookie Found": bookie['title'].upper(),
                                             "Bookie Odds": soft_price,
@@ -205,9 +210,9 @@ def premium_bot_dashboard():
                                         })
             
             if value_bets_found:
-                st.success(f"✅ Scanning Complete! Found {len(value_bets_found)} high-value single bets.")
+                st.success(f"✅ Scanning Complete! Found {len(value_bets_found)} high-value single bets globally.")
                 
-                # Filter out exact duplicates to keep the table clean
+                # Filter duplicates
                 unique_bets = []
                 seen = set()
                 for bet in value_bets_found:
@@ -217,11 +222,34 @@ def premium_bot_dashboard():
                         unique_bets.append(bet)
                 
                 df = pd.DataFrame(unique_bets)
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                df['Odds Value'] = pd.to_numeric(df['Bookie Odds'])
                 
-                st.info("💡 **Pro Tip:** Look at the 'True Fair Odds' above. Check your local apps to see if they offer a higher price for that match. If yes, that is a profitable single bet!")
+                # PACKAGE 1: 2 Odds (Most Sure)
+                st.subheader("🟢 2 Odds Package (Most Sure)")
+                df_2 = df[(df['Odds Value'] >= 1.5) & (df['Odds Value'] <= 2.99)]
+                if not df_2.empty:
+                    st.dataframe(df_2.drop(columns=['Odds Value']), use_container_width=True, hide_index=True)
+                else:
+                    st.write("No safe 2-odd values found right now.")
+
+                # PACKAGE 2: 5 Odds (Value)
+                st.subheader("🟡 5 Odds Package (Value)")
+                df_5 = df[(df['Odds Value'] >= 4.0) & (df['Odds Value'] <= 6.99)]
+                if not df_5.empty:
+                    st.dataframe(df_5.drop(columns=['Odds Value']), use_container_width=True, hide_index=True)
+                else:
+                    st.write("No 5-odd values found right now.")
+
+                # PACKAGE 3: 10 Odds (Longshot)
+                st.subheader("🔴 10 Odds Package (Longshot)")
+                df_10 = df[(df['Odds Value'] >= 8.0)]
+                if not df_10.empty:
+                    st.dataframe(df_10.drop(columns=['Odds Value']), use_container_width=True, hide_index=True)
+                else:
+                    st.write("No massive 10-odd longshots found right now.")
+                    
             else:
-                st.warning("No value bets found right now with an edge above 2%. The markets are sharp right now. Check back in a few hours!")
+                st.warning("No value bets found right now. The global markets are tight. Check back in a few hours!")
 
 # ==========================================
 # 4. ROUTER LOGIC
