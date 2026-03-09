@@ -74,8 +74,8 @@ def check_safe_accumulators(bookies, market_key, point, true_odds, match, safe_b
             
             if not fair_price: continue
             
-            # THE MAGIC UPGRADE: Only grab highly secure bets (Odds between 1.10 and 1.65)
-            if fair_price >= 1.10 and fair_price <= 1.65 and soft_price > fair_price:
+            # THE FIX: Widened to 1.85 and removed strict EV check to prioritize High Probability for slips
+            if fair_price >= 1.10 and fair_price <= 1.85:
                 market_display = f"{bet_type} {point}" if point else f"To Win: {bet_type}"
                 safe_bets_found.append({
                     "Match": f"{match['home_team']} vs {match['away_team']}",
