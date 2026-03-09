@@ -1,5 +1,5 @@
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
@@ -43,7 +43,8 @@ def check_expiry(user_record):
 # API Functions
 def get_live_odds(sport_key, api_key):
     url = f'https://api.the-odds-api.com/v4/sports/{sport_key}/odds'
-    params = {'api_key': api_key, 'regions': 'eu,uk', 'markets': 'totals', 'oddsFormat': 'decimal'}
+    # Checking both Match Winner (h2h) and Totals
+    params = {'api_key': api_key, 'regions': 'eu,uk', 'markets': 'h2h,totals', 'oddsFormat': 'decimal'}
     response = requests.get(url, params=params)
     if response.status_code == 200:
         return response.json()
@@ -57,6 +58,34 @@ def calculate_true_odds(pinnacle_odds):
         true_prob = implied / total_margin
         true_odds[outcome] = round(1 / true_prob, 2)
     return true_odds
+
+def check_soft_bookies(bookies, market_key, point, true_odds, match, value_bets_found):
+    for bookie in bookies:
+        if bookie['key'] == 'pinnacle': continue
+        soft_market = next((m for m in bookie.get('markets', []) if m['key'] == market_key), None)
+        if not soft_market: continue
+        
+        for outcome in soft_market['outcomes']:
+            if point and outcome.get('point') != point: continue
+                
+            bet_type = outcome['name']
+            soft_price = outcome['price']
+            fair_price = true_odds.get(bet_type)
+            
+            if not fair_price: continue
+            
+            if fair_price <= 15.00 and soft_price > fair_price:
+                edge = round(((soft_price / fair_price) - 1) * 100, 2)
+                if edge >= 2.0:
+                    market_display = f"{bet_type} {point}" if point else f"To Win: {bet_type}"
+                    value_bets_found.append({
+                        "Match": f"{match['home_team']} vs {match['away_team']}",
+                        "Market": market_display,
+                        "True Fair Odds": fair_price,
+                        "Bookie Found": bookie['title'].upper(),
+                        "Bookie Odds": soft_price,
+                        "Your Edge": f"{edge}%"
+                    })
 
 # ==========================================
 # 3. PAGES
@@ -148,12 +177,11 @@ def premium_bot_dashboard():
             
     st.divider()
     st.markdown("### 🚨 Global Market Scanner")
-    st.write("Click below to scan 15 global leagues for mathematically profitable single bets. Sorted into your daily packages.")
+    st.write("Click below to scan 15 global leagues for mathematically profitable single bets happening **Today**. Sorted into your daily packages.")
     
     if st.button("🔍 Scan Global Markets (Live API)", type="primary", use_container_width=True):
-        with st.spinner("Scanning Global Leagues & Calculating True Expected Value..."):
+        with st.spinner("Scanning Global Leagues for Today's Matches..."):
             API_KEY = '789faf8bb53e104396c0f8f6b6fba1aa' 
-            # UPGRADE: 15 Global leagues for everyday action
             SPORTS = [
                 'soccer_epl', 'soccer_spain_la_liga', 'soccer_italy_serie_a', 'soccer_germany_bundesliga', 'soccer_france_ligue_one',
                 'soccer_uefa_champs_league', 'soccer_uefa_europa_league', 'soccer_netherlands_eredivisie', 'soccer_portugal_primeira_liga',
@@ -168,49 +196,38 @@ def premium_bot_dashboard():
                 if not matches: continue
                     
                 for match in matches:
+                    # TIME FILTER: Only show games playing TODAY in Kenyan Time
+                    EAT_TZ = timezone(timedelta(hours=3))
+                    match_time_utc = datetime.fromisoformat(match['commence_time'].replace('Z', '+00:00'))
+                    match_time_local = match_time_utc.astimezone(EAT_TZ)
+                    today = datetime.now(EAT_TZ).date()
+                    
+                    if match_time_local.date() != today:
+                        continue 
+
                     bookies = match.get('bookmakers', [])
                     pinnacle_data = next((b for b in bookies if b['key'] == 'pinnacle'), None)
                     if not pinnacle_data or not pinnacle_data.get('markets'): continue
                         
-                    pinny_totals = pinnacle_data['markets'][0]['outcomes']
-                    points_available = set(item.get('point') for item in pinny_totals if 'point' in item)
-                    
-                    for point in points_available:
-                        pinny_line = {item['name']: item['price'] for item in pinny_totals if item.get('point') == point}
-                        if len(pinny_line) < 2: continue
-                            
-                        true_odds = calculate_true_odds(pinny_line)
+                    for market in pinnacle_data['markets']:
+                        pinny_outcomes = market['outcomes']
                         
-                        for bookie in bookies:
-                            if bookie['key'] == 'pinnacle': continue
+                        if market['key'] == 'totals':
+                            points_available = set(item.get('point') for item in pinny_outcomes if 'point' in item)
+                            for point in points_available:
+                                pinny_line = {item['name']: item['price'] for item in pinny_outcomes if item.get('point') == point}
+                                if len(pinny_line) < 2: continue
+                                true_odds = calculate_true_odds(pinny_line)
+                                check_soft_bookies(bookies, market['key'], point, true_odds, match, value_bets_found)
                                 
-                            soft_market = bookie.get('markets', [])
-                            if not soft_market: continue
-                            
-                            for outcome in soft_market[0]['outcomes']:
-                                if outcome.get('point') != point: continue
-                                
-                                bet_type = outcome['name']
-                                soft_price = outcome['price']
-                                fair_price = true_odds.get(bet_type)
-                                
-                                if not fair_price: continue
-                                
-                                # Finding Value Edge (Allowing up to 15.00 fair odds to catch 5-odd and 10-odd longshots)
-                                if fair_price <= 15.00 and soft_price > fair_price:
-                                    edge = round(((soft_price / fair_price) - 1) * 100, 2)
-                                    if edge >= 2.0:
-                                        value_bets_found.append({
-                                            "Match": f"{match['home_team']} vs {match['away_team']}",
-                                            "Market": f"{bet_type} {point}",
-                                            "True Fair Odds": fair_price,
-                                            "Bookie Found": bookie['title'].upper(),
-                                            "Bookie Odds": soft_price,
-                                            "Your Edge": f"{edge}%"
-                                        })
+                        elif market['key'] == 'h2h':
+                            pinny_line = {item['name']: item['price'] for item in pinny_outcomes}
+                            if len(pinny_line) < 2: continue
+                            true_odds = calculate_true_odds(pinny_line)
+                            check_soft_bookies(bookies, market['key'], None, true_odds, match, value_bets_found)
             
             if value_bets_found:
-                st.success(f"✅ Scanning Complete! Found {len(value_bets_found)} high-value single bets globally.")
+                st.success(f"✅ Scanning Complete! Found {len(value_bets_found)} high-value single bets for today.")
                 
                 # Filter duplicates
                 unique_bets = []
