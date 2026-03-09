@@ -43,7 +43,6 @@ def check_expiry(user_record):
 # API Functions
 def get_live_odds(sport_key, api_key):
     url = f'https://api.the-odds-api.com/v4/sports/{sport_key}/odds'
-    # Checking both Match Winner (h2h) and Totals
     params = {'api_key': api_key, 'regions': 'eu,uk', 'markets': 'h2h,totals', 'oddsFormat': 'decimal'}
     response = requests.get(url, params=params)
     if response.status_code == 200:
@@ -74,7 +73,7 @@ def check_safe_accumulators(bookies, market_key, point, true_odds, match, safe_b
             
             if not fair_price: continue
             
-            # THE FIX: Widened to 1.85 and removed strict EV check to prioritize High Probability for slips
+            # Grabbing high probability safe bets (1.10 to 1.85)
             if fair_price >= 1.10 and fair_price <= 1.85:
                 market_display = f"{bet_type} {point}" if point else f"To Win: {bet_type}"
                 safe_bets_found.append({
@@ -82,7 +81,7 @@ def check_safe_accumulators(bookies, market_key, point, true_odds, match, safe_b
                     "Market": market_display,
                     "Bookie Found": bookie['title'].upper(),
                     "Bookie Odds": soft_price,
-                    "Win Prob": f"{round((1/fair_price)*100, 1)}%" # Show customers exactly how safe it is!
+                    "Win Prob": f"{round((1/fair_price)*100, 1)}%" 
                 })
 
 # ==========================================
@@ -175,16 +174,25 @@ def premium_bot_dashboard():
             
     st.divider()
     st.markdown("### 🚨 Smart Accumulator Builder")
-    st.write("Click below to scan for today's safest, highest-probability matches. The bot will automatically combine them into secure 2, 5, and 10 odds slips.")
+    st.write("Click below to dynamically scan active global leagues for today's safest, highest-probability matches.")
     
     if st.button("🔍 Generate Today's Secure Slips", type="primary", use_container_width=True):
-        with st.spinner("Hunting for high-probability safe bets..."):
+        with st.spinner("Dynamically scanning the globe for active matches today..."):
             API_KEY = '789faf8bb53e104396c0f8f6b6fba1aa' 
-            SPORTS = [
-                'soccer_epl', 'soccer_spain_la_liga', 'soccer_italy_serie_a', 'soccer_germany_bundesliga', 'soccer_france_ligue_one',
-                'soccer_uefa_champs_league', 'soccer_uefa_europa_league', 'soccer_netherlands_eredivisie', 'soccer_portugal_primeira_liga',
-                'soccer_turkey_super_league', 'soccer_brazil_campeonato', 'soccer_usa_mls', 'soccer_mexico_ligamx'
-            ]
+            
+            # DYNAMIC LEAGUE FETCHER: Asks the API what is playing today
+            sports_url = f'https://api.the-odds-api.com/v4/sports?api_key={API_KEY}'
+            sports_response = requests.get(sports_url)
+            
+            SPORTS = []
+            if sports_response.status_code == 200:
+                all_sports = sports_response.json()
+                # Grabs up to 15 active soccer leagues to protect your API limits
+                SPORTS = [s['key'] for s in all_sports if 'soccer' in s['key'] and s.get('active')][:15]
+            
+            if not SPORTS:
+                st.error("Could not connect to the global sports database to find active leagues.")
+                return
             
             safe_bets_found = []
             
@@ -221,7 +229,7 @@ def premium_bot_dashboard():
                             check_safe_accumulators(bookies, market['key'], None, true_odds, match, safe_bets_found)
             
             if safe_bets_found:
-                # Remove duplicates to ensure clean slips
+                # Remove duplicates
                 unique_bets = []
                 seen = set()
                 for bet in safe_bets_found:
@@ -232,35 +240,51 @@ def premium_bot_dashboard():
                 
                 df = pd.DataFrame(unique_bets)
                 df['Odds Value'] = pd.to_numeric(df['Bookie Odds'])
-                
-                # Sort by lowest odds first (the most secure bets go first)
                 df = df.sort_values(by='Odds Value').reset_index(drop=True)
                 
-                st.success(f"✅ Scanning Complete! Found {len(df)} highly secure matches to build slips with.")
+                st.success(f"✅ Scanning Complete! Found {len(df)} highly secure matches across the globe.")
                 
-                # --- ACCUMULATOR BUILDER LOGIC ---
+                # --- NEW: EXACT 2-MATCH DOUBLE BUILDER ---
+                def build_exact_double(available_df):
+                    for i in range(len(available_df)):
+                        for j in range(i + 1, len(available_df)):
+                            m1 = available_df.iloc[i]
+                            m2 = available_df.iloc[j]
+                            # Make sure they are different matches
+                            if m1['Match'] != m2['Match']:
+                                combined = m1['Odds Value'] * m2['Odds Value']
+                                # Looks for a combined odds between 1.70 and 2.50
+                                if 1.70 <= combined <= 2.50:
+                                    return pd.DataFrame([m1, m2]), round(combined, 2)
+                    return pd.DataFrame(), 0.0
+
+                # Standard Accumulator Builder
                 def build_slip(target_odds, available_df):
                     slip_matches = []
                     current_slip_odds = 1.0
+                    used_matches = set()
                     for _, row in available_df.iterrows():
                         if current_slip_odds < target_odds:
-                            slip_matches.append(row)
-                            current_slip_odds *= row['Odds Value']
+                            if row['Match'] not in used_matches:
+                                slip_matches.append(row)
+                                used_matches.add(row['Match'])
+                                current_slip_odds *= row['Odds Value']
                     return pd.DataFrame(slip_matches), round(current_slip_odds, 2)
 
-                # PACKAGE 1: 2 Odds Slip
-                st.subheader("🟢 2 Odds Slip (Most Sure)")
-                slip_2, odds_2 = build_slip(2.0, df)
-                if not slip_2.empty and odds_2 >= 1.5:
+                # PACKAGE 1: 2 Odds Slip (Exact Double)
+                st.subheader("🟢 2 Odds Slip (Safest Double)")
+                st.write("This slip specifically combines exactly two high-probability matches to hit your daily target.")
+                slip_2, odds_2 = build_exact_double(df)
+                if not slip_2.empty:
                     st.dataframe(slip_2.drop(columns=['Odds Value']), use_container_width=True, hide_index=True)
                     st.info(f"**Total Combined Odds:** {odds_2}")
                 else:
-                    st.write("Not enough safe games to build a 2-odd slip right now.")
+                    st.write("Could not find two perfectly matching games for a 2-odd double right now.")
 
                 # PACKAGE 2: 5 Odds Slip
                 st.subheader("🟡 5 Odds Slip (Value Multibet)")
                 slip_5, odds_5 = build_slip(5.0, df)
-                if not slip_5.empty and odds_5 >= 3.5:
+                if not slip_5.empty and odds_5 >= 3.0:
                     st.dataframe(slip_5.drop(columns=['Odds Value']), use_container_width=True, hide_index=True)
                     st.info(f"**Total Combined Odds:** {odds_5}")
                 else:
@@ -269,14 +293,14 @@ def premium_bot_dashboard():
                 # PACKAGE 3: 10 Odds Slip
                 st.subheader("🔴 10 Odds Slip (Mega Acca)")
                 slip_10, odds_10 = build_slip(10.0, df)
-                if not slip_10.empty and odds_10 >= 7.0:
+                if not slip_10.empty and odds_10 >= 6.0:
                     st.dataframe(slip_10.drop(columns=['Odds Value']), use_container_width=True, hide_index=True)
                     st.info(f"**Total Combined Odds:** {odds_10}")
                 else:
                     st.write("Not enough safe games to build a full 10-odd slip right now.")
                     
             else:
-                st.warning("No highly secure matches found right now. Check back in a few hours!")
+                st.warning("No highly secure matches found playing right now. Check back later today!")
 
 # ==========================================
 # 4. ROUTER LOGIC
