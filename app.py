@@ -79,7 +79,7 @@ def check_safe_accumulators(bookies, market_key, point, true_odds, match, safe_b
             soft_price = outcome['price']
             fair_price = true_odds.get(bet_type)
             if not fair_price: continue
-            # The Legit Filter
+            # The Legit Filter (1.10 to 1.85 odds)
             if fair_price >= 1.10 and fair_price <= 1.85:
                 market_display = f"{bet_type} {point}" if point else f"To Win: {bet_type}"
                 safe_bets_found.append({
@@ -179,18 +179,30 @@ def premium_bot_dashboard():
         st.session_state.current_user = None
         st.rerun()
     st.divider()
-    st.markdown("### 🚨 Global Market Scanner")
+    st.markdown("### 🚨 Global Market Scanner (Prioritizing Women's & U21 Leagues)")
     if st.button("🔍 Generate Today's Secure Slips", type="primary", use_container_width=True):
-        with st.spinner("Scanning the globe..."):
+        with st.spinner("Hunting for high-consistency matches (Women's, U21, & Top Tiers)..."):
             API_KEY = '789faf8bb53e104396c0f8f6b6fba1aa' 
             sports_url = f'https://api.the-odds-api.com/v4/sports?api_key={API_KEY}'
             sports_response = requests.get(sports_url)
+            
             if sports_response.status_code == 200:
                 all_sports = sports_response.json()
-                SPORTS = [s['key'] for s in all_sports if 'soccer' in s['key'] and s.get('active')][:15]
+                
+                # Filter for active soccer leagues
+                active_soccer = [s['key'] for s in all_sports if 'soccer' in s['key'] and s.get('active')]
+                
+                # --- THE NEW PRIORITY SYSTEM ---
+                priority_keywords = ['women', 'wsl', 'u21', 'youth', 'u23', 'u20']
+                priority_leagues = [s for s in active_soccer if any(kw in s.lower() for kw in priority_keywords)]
+                regular_leagues = [s for s in active_soccer if s not in priority_leagues]
+                
+                # Combine them, putting priority leagues at the very top, and limit to 12 to save API limits
+                SPORTS = (priority_leagues + regular_leagues)[:12]
             else:
                 st.error("API Error.")
                 return
+                
             safe_bets_found = []
             for sport in SPORTS:
                 matches = get_live_odds(sport, API_KEY)
@@ -206,6 +218,7 @@ def premium_bot_dashboard():
                                 if market['key'] in ['totals', 'h2h']:
                                     true_odds = calculate_true_odds({i['name']: i['price'] for i in market['outcomes']})
                                     check_safe_accumulators(bookies, market['key'], market['outcomes'][0].get('point'), true_odds, match, safe_bets_found)
+                                    
             if safe_bets_found:
                 df = pd.DataFrame(safe_bets_found).drop_duplicates(subset=['Match', 'Market'])
                 df['Odds Value'] = pd.to_numeric(df['Bookie Odds'])
@@ -223,6 +236,29 @@ def premium_bot_dashboard():
                                 double_found = True
                                 break
                     if double_found: break
+                    
+                # Standard Accumulator Builder
+                def build_slip(target_odds, available_df):
+                    slip_matches, current_slip_odds, used_matches = [], 1.0, set()
+                    for _, row in available_df.iterrows():
+                        if current_slip_odds < target_odds:
+                            if row['Match'] not in used_matches:
+                                slip_matches.append(row)
+                                used_matches.add(row['Match'])
+                                current_slip_odds *= row['Odds Value']
+                    return pd.DataFrame(slip_matches), round(current_slip_odds, 2)
+
+                st.subheader("🟡 5 Odds Slip (Value Multibet)")
+                slip_5, odds_5 = build_slip(5.0, df)
+                if not slip_5.empty and odds_5 >= 3.0:
+                    st.dataframe(slip_5.drop(columns=['Odds Value']), use_container_width=True, hide_index=True)
+                    st.info(f"**Total Combined Odds:** {odds_5}")
+
+                st.subheader("🔴 10 Odds Slip (Mega Acca)")
+                slip_10, odds_10 = build_slip(10.0, df)
+                if not slip_10.empty and odds_10 >= 6.0:
+                    st.dataframe(slip_10.drop(columns=['Odds Value']), use_container_width=True, hide_index=True)
+                    st.info(f"**Total Combined Odds:** {odds_10}")
             else:
                 st.warning("No secure matches today. Math says: Stay safe and skip today!")
 
