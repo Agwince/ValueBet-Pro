@@ -80,7 +80,7 @@ def check_safe_accumulators(bookies, market_key, point, true_odds, match, safe_b
             fair_price = true_odds.get(bet_type)
             if not fair_price: continue
             
-            # NORMAL FILTER RESTORED: Catch Champions League but block longshots (1.10 to 2.20)
+            # NORMAL FILTER RESTORED: (1.10 to 2.20)
             if fair_price >= 1.10 and fair_price <= 2.20:
                 market_display = f"{bet_type} {point}" if point else f"To Win: {bet_type}"
                 safe_bets_found.append({
@@ -180,10 +180,10 @@ def premium_bot_dashboard():
         st.session_state.current_user = None
         st.rerun()
     st.divider()
-    st.markdown("### 🚨 Global Market Scanner (Prioritizing Top Tiers, Women's & U21 Leagues)")
+    st.markdown("### 🚨 Global Market Scanner (Prioritizing Women's & U21 Leagues)")
     
     if st.button("🔍 Generate Today's Secure Slips", type="primary", use_container_width=True):
-        with st.spinner("Hunting for high-consistency matches (Champions League, Women's, U21, & Top Tiers)..."):
+        with st.spinner("Hunting for high-consistency matches (Women's & U21)..."):
             
             # --- THE AUTO-SWITCH API KEY MANAGER ---
             API_KEYS = [
@@ -210,7 +210,8 @@ def premium_bot_dashboard():
             # Filter for active soccer leagues
             active_soccer = [s['key'] for s in all_sports if 'soccer' in s['key'] and s.get('active')]
             
-            priority_keywords = ['women', 'wsl', 'u21', 'youth', 'u23', 'u20', 'uefa', 'epl', 'europ']
+            # --- BACK TO STRICT ROOTS ---
+            priority_keywords = ['women', 'wsl', 'u21', 'youth', 'u23', 'u20']
             priority_leagues = [s for s in active_soccer if any(kw in s.lower() for kw in priority_keywords)]
             regular_leagues = [s for s in active_soccer if s not in priority_leagues]
             
@@ -259,7 +260,9 @@ def premium_bot_dashboard():
                     for j in range(i + 1, len(df)):
                         if df.iloc[i]['Match'] != df.iloc[j]['Match']:
                             combined = df.iloc[i]['Odds Value'] * df.iloc[j]['Odds Value']
-                            if 1.75 <= combined <= 2.50:
+                            
+                            # UPDATED FIX: Ceiling raised to 3.00 so it actually displays!
+                            if 1.75 <= combined <= 3.00:
                                 st.dataframe(pd.DataFrame([df.iloc[i], df.iloc[j]]).drop(columns=['Odds Value']), use_container_width=True, hide_index=True)
                                 st.info(f"**Total Combined Odds:** {round(combined, 2)}")
                                 double_found = True
