@@ -51,6 +51,16 @@ def check_expiry(user_record):
     today = datetime.now().date()
     return today <= expiry_date
 
+# --- 🧠 NEW: API CACHING (Saves massive API limits by memorizing data for 2 hours) ---
+@st.cache_data(ttl=7200, show_spinner=False)
+def get_active_sports(api_key):
+    sports_url = f'https://api.the-odds-api.com/v4/sports?api_key={api_key}'
+    sports_response = requests.get(sports_url)
+    if sports_response.status_code == 200:
+        return sports_response.json()
+    return None
+
+@st.cache_data(ttl=7200, show_spinner=False)
 def get_live_odds(sport_key, api_key):
     url = f'https://api.the-odds-api.com/v4/sports/{sport_key}/odds'
     params = {'api_key': api_key, 'regions': 'eu,uk', 'markets': 'h2h,totals', 'oddsFormat': 'decimal'}
@@ -58,6 +68,7 @@ def get_live_odds(sport_key, api_key):
     if response.status_code == 200:
         return response.json()
     return None
+# -------------------------------------------------------------------------------------
 
 def calculate_true_odds(pinnacle_odds):
     implied_probs = {outcome: (1 / odds) for outcome, odds in pinnacle_odds.items()}
@@ -80,7 +91,7 @@ def check_safe_accumulators(bookies, market_key, point, true_odds, match, safe_b
             fair_price = true_odds.get(bet_type)
             if not fair_price: continue
             
-            # NORMAL FILTER RESTORED: (1.10 to 2.20)
+            # NORMAL FILTER RESTORED: Catch safe value but block longshots (1.10 to 2.20)
             if fair_price >= 1.10 and fair_price <= 2.20:
                 market_display = f"{bet_type} {point}" if point else f"To Win: {bet_type}"
                 safe_bets_found.append({
@@ -98,19 +109,54 @@ def results_page():
     st.header("📊 Verified Profit History")
     st.markdown("Transparency is our priority. We log every win and loss to keep the system legit.")
     data = get_all_results()
+    
     if not data:
         st.info("Verified results are being compiled. Log your first wins in the Admin panel!")
     else:
         df = pd.DataFrame(data)
         total = len(df)
-        wins = len(df[df['Outcome (Win/Loss)'].str.lower() == 'win'])
+        
+        # Safely check for outcomes
+        if 'Outcome (Win/Loss)' in df.columns:
+            wins = len(df[df['Outcome (Win/Loss)'].str.lower() == 'win'])
+        elif 'Outcome' in df.columns:
+            wins = len(df[df['Outcome'].str.lower() == 'win'])
+        else:
+            wins = 0
+            
         rate = round((wins / total) * 100, 1) if total > 0 else 0
+        
         c1, c2, c3 = st.columns(3)
         c1.metric("Total Bets", total)
         c2.metric("Wins", wins)
         c3.metric("Verified Win Rate", f"{rate}%")
+        
         st.divider()
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        
+        # --- 📈 NEW: CUMULATIVE PROFIT GRAPH ---
+        st.subheader("🚀 Bankroll Growth Over Time")
+        
+        try:
+            # Format dates and numbers for the graph
+            df['Date'] = pd.to_datetime(df['Match Date'])
+            df['Profit/Loss (Units)'] = pd.to_numeric(df['Profit/Loss (Units)'])
+            
+            # Sort chronologically and calculate cumulative total
+            df = df.sort_values('Date')
+            df['Cumulative Bankroll (Units)'] = df['Profit/Loss (Units)'].cumsum()
+            
+            # Draw the graph
+            st.line_chart(df, x='Date', y='Cumulative Bankroll (Units)', color="#00ff00")
+            
+            st.divider()
+            st.subheader("📝 Detailed Bet Log")
+            # Hide the math columns from the public view
+            display_df = df.drop(columns=['Date', 'Cumulative Bankroll (Units)'])
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            
+        except Exception as e:
+            st.warning("Graph will render once a valid win/loss is logged in the Admin Panel.")
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
 def home_and_register():
     st.title("🤖 ValueBet Algorithm Pro")
@@ -159,6 +205,7 @@ def admin_dashboard():
             if results_sheet:
                 results_sheet.append_row([str(res_date), res_match, res_odds, res_outcome, res_pl])
                 st.success("Result added to public verified list!")
+                st.rerun()
             else:
                 st.error("Missing 'Results' tab in Google Sheets.")
     st.divider()
@@ -194,14 +241,12 @@ def premium_bot_dashboard():
             working_key = None
             all_sports = None
             
-            # Test keys until we find one that works
+            # Test keys until we find one that works (now heavily cached!)
             for key in API_KEYS:
-                sports_url = f'https://api.the-odds-api.com/v4/sports?api_key={key}'
-                sports_response = requests.get(sports_url)
-                if sports_response.status_code == 200:
-                    all_sports = sports_response.json()
+                all_sports = get_active_sports(key)
+                if all_sports:
                     working_key = key
-                    break # Found a good key, stop checking!
+                    break 
             
             if not working_key:
                 st.error("🚨 CRITICAL ERROR: Both API Keys have hit their limits! You need a new key.")
@@ -219,7 +264,7 @@ def premium_bot_dashboard():
             
             safe_bets_found = []
             for sport in SPORTS:
-                matches = get_live_odds(sport, working_key) # Using the confirmed working key
+                matches = get_live_odds(sport, working_key) # Now calls the cached memory first!
                 if not matches: continue
                 for match in matches:
                     EAT_TZ = timezone(timedelta(hours=3))
@@ -260,8 +305,6 @@ def premium_bot_dashboard():
                     for j in range(i + 1, len(df)):
                         if df.iloc[i]['Match'] != df.iloc[j]['Match']:
                             combined = df.iloc[i]['Odds Value'] * df.iloc[j]['Odds Value']
-                            
-                            # UPDATED FIX: Ceiling raised to 3.00 so it actually displays!
                             if 1.75 <= combined <= 3.00:
                                 st.dataframe(pd.DataFrame([df.iloc[i], df.iloc[j]]).drop(columns=['Odds Value']), use_container_width=True, hide_index=True)
                                 st.info(f"**Total Combined Odds:** {round(combined, 2)}")
