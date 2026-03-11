@@ -179,9 +179,9 @@ def premium_bot_dashboard():
         st.session_state.current_user = None
         st.rerun()
     st.divider()
-    st.markdown("### 🚨 Global Market Scanner (Prioritizing Women's & U21 Leagues)")
+    st.markdown("### 🚨 Global Market Scanner (Prioritizing Top Tiers, Women's & U21 Leagues)")
     if st.button("🔍 Generate Today's Secure Slips", type="primary", use_container_width=True):
-        with st.spinner("Hunting for high-consistency matches (Women's, U21, & Top Tiers)..."):
+        with st.spinner("Hunting for high-consistency matches (Champions League, Women's, U21, & Top Tiers)..."):
             API_KEY = '789faf8bb53e104396c0f8f6b6fba1aa' 
             sports_url = f'https://api.the-odds-api.com/v4/sports?api_key={API_KEY}'
             sports_response = requests.get(sports_url)
@@ -193,7 +193,8 @@ def premium_bot_dashboard():
                 active_soccer = [s['key'] for s in all_sports if 'soccer' in s['key'] and s.get('active')]
                 
                 # --- THE NEW PRIORITY SYSTEM ---
-                priority_keywords = ['women', 'wsl', 'u21', 'youth', 'u23', 'u20']
+                # Added uefa, epl, and europ to force big leagues to the top of the scan list!
+                priority_keywords = ['women', 'wsl', 'u21', 'youth', 'u23', 'u20', 'uefa', 'epl', 'europ']
                 priority_leagues = [s for s in active_soccer if any(kw in s.lower() for kw in priority_keywords)]
                 regular_leagues = [s for s in active_soccer if s not in priority_leagues]
                 
