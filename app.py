@@ -80,8 +80,8 @@ def check_safe_accumulators(bookies, market_key, point, true_odds, match, safe_b
             fair_price = true_odds.get(bet_type)
             if not fair_price: continue
             
-            # THE FLOODGATE TEST: Temporarily raised from 2.20 to 10.00
-            if fair_price >= 1.10 and fair_price <= 10.00:
+            # NORMAL FILTER RESTORED: Catch Champions League but block longshots (1.10 to 2.20)
+            if fair_price >= 1.10 and fair_price <= 2.20:
                 market_display = f"{bet_type} {point}" if point else f"To Win: {bet_type}"
                 safe_bets_found.append({
                     "Match": f"{match['home_team']} vs {match['away_team']}",
@@ -181,32 +181,44 @@ def premium_bot_dashboard():
         st.rerun()
     st.divider()
     st.markdown("### 🚨 Global Market Scanner (Prioritizing Top Tiers, Women's & U21 Leagues)")
+    
     if st.button("🔍 Generate Today's Secure Slips", type="primary", use_container_width=True):
         with st.spinner("Hunting for high-consistency matches (Champions League, Women's, U21, & Top Tiers)..."):
-            API_KEY = '789faf8bb53e104396c0f8f6b6fba1aa' 
-            sports_url = f'https://api.the-odds-api.com/v4/sports?api_key={API_KEY}'
-            sports_response = requests.get(sports_url)
             
-            if sports_response.status_code == 200:
-                all_sports = sports_response.json()
-                
-                # Filter for active soccer leagues
-                active_soccer = [s['key'] for s in all_sports if 'soccer' in s['key'] and s.get('active')]
-                
-                # --- THE NEW PRIORITY SYSTEM ---
-                priority_keywords = ['women', 'wsl', 'u21', 'youth', 'u23', 'u20', 'uefa', 'epl', 'europ']
-                priority_leagues = [s for s in active_soccer if any(kw in s.lower() for kw in priority_keywords)]
-                regular_leagues = [s for s in active_soccer if s not in priority_leagues]
-                
-                # Combine them, putting priority leagues at the very top, and limit to 12
-                SPORTS = (priority_leagues + regular_leagues)[:12]
-            else:
-                st.error("API Error.")
+            # --- THE AUTO-SWITCH API KEY MANAGER ---
+            API_KEYS = [
+                '12ec16da595cafd5f9a5fd2afaa685f9', # New Key (Primary)
+                '789faf8bb53e104396c0f8f6b6fba1aa'  # Old Key (Backup for next month)
+            ]
+            
+            working_key = None
+            all_sports = None
+            
+            # Test keys until we find one that works
+            for key in API_KEYS:
+                sports_url = f'https://api.the-odds-api.com/v4/sports?api_key={key}'
+                sports_response = requests.get(sports_url)
+                if sports_response.status_code == 200:
+                    all_sports = sports_response.json()
+                    working_key = key
+                    break # Found a good key, stop checking!
+            
+            if not working_key:
+                st.error("🚨 CRITICAL ERROR: Both API Keys have hit their limits! You need a new key.")
                 return
                 
+            # Filter for active soccer leagues
+            active_soccer = [s['key'] for s in all_sports if 'soccer' in s['key'] and s.get('active')]
+            
+            priority_keywords = ['women', 'wsl', 'u21', 'youth', 'u23', 'u20', 'uefa', 'epl', 'europ']
+            priority_leagues = [s for s in active_soccer if any(kw in s.lower() for kw in priority_keywords)]
+            regular_leagues = [s for s in active_soccer if s not in priority_leagues]
+            
+            SPORTS = (priority_leagues + regular_leagues)[:12]
+            
             safe_bets_found = []
             for sport in SPORTS:
-                matches = get_live_odds(sport, API_KEY)
+                matches = get_live_odds(sport, working_key) # Using the confirmed working key
                 if not matches: continue
                 for match in matches:
                     EAT_TZ = timezone(timedelta(hours=3))
