@@ -79,8 +79,8 @@ def check_safe_accumulators(bookies, market_key, point, true_odds, match, safe_b
             soft_price = outcome['price']
             fair_price = true_odds.get(bet_type)
             if not fair_price: continue
-            # The Legit Filter (1.10 to 1.85 odds)
-            if fair_price >= 1.10 and fair_price <= 1.85:
+            # The Looser Filter for big tournaments (up to 2.20 odds)
+            if fair_price >= 1.10 and fair_price <= 2.20:
                 market_display = f"{bet_type} {point}" if point else f"To Win: {bet_type}"
                 safe_bets_found.append({
                     "Match": f"{match['home_team']} vs {match['away_team']}",
@@ -193,12 +193,11 @@ def premium_bot_dashboard():
                 active_soccer = [s['key'] for s in all_sports if 'soccer' in s['key'] and s.get('active')]
                 
                 # --- THE NEW PRIORITY SYSTEM ---
-                # Added uefa, epl, and europ to force big leagues to the top of the scan list!
                 priority_keywords = ['women', 'wsl', 'u21', 'youth', 'u23', 'u20', 'uefa', 'epl', 'europ']
                 priority_leagues = [s for s in active_soccer if any(kw in s.lower() for kw in priority_keywords)]
                 regular_leagues = [s for s in active_soccer if s not in priority_leagues]
                 
-                # Combine them, putting priority leagues at the very top, and limit to 12 to save API limits
+                # Combine them, putting priority leagues at the very top, and limit to 12
                 SPORTS = (priority_leagues + regular_leagues)[:12]
             else:
                 st.error("API Error.")
@@ -223,8 +222,24 @@ def premium_bot_dashboard():
             if safe_bets_found:
                 df = pd.DataFrame(safe_bets_found).drop_duplicates(subset=['Match', 'Market'])
                 df['Odds Value'] = pd.to_numeric(df['Bookie Odds'])
+                
+                # Sort by lowest risk first
                 df = df.sort_values(by='Odds Value').reset_index(drop=True)
                 
+                # ==========================================
+                # 🎯 NEW: THE PREMIUM SINGLE BET
+                # ==========================================
+                st.subheader("🎯 Premium Single Bet (Value Pick)")
+                single_df = df.sort_values(by='Odds Value', ascending=False).head(1)
+                if not single_df.empty:
+                    st.dataframe(single_df.drop(columns=['Odds Value']), use_container_width=True, hide_index=True)
+                    st.success(f"**Value Pick Odds:** {single_df.iloc[0]['Bookie Odds']}")
+                else:
+                    st.info("No single matches hit the exact value criteria today.")
+
+                # ==========================================
+                # 🟢 THE 2-ODDS DOUBLE
+                # ==========================================
                 st.subheader("🟢 2 Odds Slip (Surest Double)")
                 double_found = False
                 for i in range(len(df)):
@@ -238,7 +253,9 @@ def premium_bot_dashboard():
                                 break
                     if double_found: break
                     
-                # Standard Accumulator Builder
+                # ==========================================
+                # 🟡 & 🔴 MULTIBETS
+                # ==========================================
                 def build_slip(target_odds, available_df):
                     slip_matches, current_slip_odds, used_matches = [], 1.0, set()
                     for _, row in available_df.iterrows():
