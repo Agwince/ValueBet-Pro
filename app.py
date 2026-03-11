@@ -79,8 +79,9 @@ def check_safe_accumulators(bookies, market_key, point, true_odds, match, safe_b
             soft_price = outcome['price']
             fair_price = true_odds.get(bet_type)
             if not fair_price: continue
-            # The Looser Filter for big tournaments (up to 2.20 odds)
-            if fair_price >= 1.10 and fair_price <= 2.20:
+            
+            # THE FLOODGATE TEST: Temporarily raised from 2.20 to 10.00
+            if fair_price >= 1.10 and fair_price <= 10.00:
                 market_display = f"{bet_type} {point}" if point else f"To Win: {bet_type}"
                 safe_bets_found.append({
                     "Match": f"{match['home_team']} vs {match['away_team']}",
@@ -227,7 +228,7 @@ def premium_bot_dashboard():
                 df = df.sort_values(by='Odds Value').reset_index(drop=True)
                 
                 # ==========================================
-                # 🎯 NEW: THE PREMIUM SINGLE BET
+                # 🎯 THE PREMIUM SINGLE BET
                 # ==========================================
                 st.subheader("🎯 Premium Single Bet (Value Pick)")
                 single_df = df.sort_values(by='Odds Value', ascending=False).head(1)
