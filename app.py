@@ -4,8 +4,8 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 import json
-import requests  
-import cloudscraper
+import requests  # Standard requests for the Odds API
+from curl_cffi import requests as curl_requests # Heavy artillery for Forebet
 from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="ValueBet Algorithm Pro", layout="wide", page_icon="🤖")
@@ -33,19 +33,27 @@ if 'current_user' not in st.session_state:
     st.session_state.current_user = None
 
 # ==========================================
-# 2. THE ADAPTIVE FOREBET BRAIN (GOD MODE)
+# 2. THE BULLETPROOF FOREBET BRAIN (GOD MODE V2)
 # ==========================================
-@st.cache_data(ttl=3600, show_spinner=False) # Caches the scraper for 1 hour
+# Notice: No caching! It gets fresh data every single time you click the button.
 def get_forebet_premium_targets():
     url = 'https://www.forebet.com/en/football-tips-and-predictions-for-today'
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
     all_targets = []
     
+    headers = {
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    }
+    
     try:
-        response = scraper.get(url, timeout=15)
+        # Using our ultimate TLS Spoofing weapon to bypass Streamlit server blocks!
+        response = curl_requests.get(url, headers=headers, impersonate="chrome110", timeout=20)
+        
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             match_rows = soup.find_all('div', class_='rcnt') 
+            
+            # 🚨 DEBUG TRACKER: Tells us exactly what the bot sees!
+            st.info(f"🕵️ System check: Successfully hacked Forebet. Extracted {len(match_rows)} raw matches from the database.")
             
             for row in match_rows:
                 try:
@@ -60,8 +68,7 @@ def get_forebet_premium_targets():
                             away_prob = int(spans[2].text.strip())
                             highest_prob = max(home_prob, away_prob)
                             
-                            # THE NEW ADAPTIVE FILTER: 
-                            # Take anything 60% or higher to guarantee daily action
+                            # Adaptive Filter: Take 60%+ to feed the VIPs
                             if highest_prob >= 60:
                                 all_targets.append({
                                     'home': home_team,
@@ -70,14 +77,16 @@ def get_forebet_premium_targets():
                                 })
                 except:
                     continue 
+        else:
+            st.error(f"🚨 Forebet blocked the Streamlit server! Status: {response.status_code}")
     except Exception as e:
-        pass 
+        st.error(f"❌ Scraper crashed: {e}")
         
     # Sort the list so the safest matches are always at the very top
     all_targets = sorted(all_targets, key=lambda x: x['prob'], reverse=True)
     
-    # Return the Top 10 safest matches of the day
-    return all_targets[:10]
+    # Return the Top 20 safest matches of the day
+    return all_targets[:20]
 
 # ==========================================
 # 3. ODDS API HELPERS
@@ -178,15 +187,13 @@ def premium_bot_dashboard():
                     # THE FUZZY MATCHER
                     is_premium = False
                     for target in premium_targets:
-                        # If the first word of the team name matches, we count it!
                         if target['home'].split()[0].lower() in match['home_team'].lower() or target['away'].split()[0].lower() in match['away_team'].lower():
                             is_premium = True
                             break
                             
                     if not is_premium:
-                        continue # Skip garbage matches!
+                        continue 
 
-                    # Process the VIP match
                     bookies = match.get('bookmakers', [])
                     pinnacle_data = next((b for b in bookies if b['key'] == 'pinnacle'), None)
                     if pinnacle_data and pinnacle_data.get('markets'):
