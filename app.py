@@ -92,16 +92,25 @@ def get_forebet_premium_targets():
     return all_targets[:10]
 
 # ==========================================
-# 3. ENGINE 2: API-FOOTBALL FACT-CHECKER
+# 3. ENGINE 2: API-FOOTBALL FACT-CHECKER (WITH SMART FILTER)
 # ==========================================
 def get_api_football_facts(team_name):
     # 🛑 PASTE YOUR API KEY HERE 🛑
-    api_key = "PASTE_YOUR_KEY_HERE"
+    api_key = "3b0601a38ca386edc1a448c3fb760a6e"
     headers = {'x-apisports-key': api_key}
     today = datetime.now().strftime("%Y-%m-%d")
     
-    # Use the first 5 letters of the team to ensure a fuzzy match between platforms
-    search_url = f"https://v3.football.api-sports.io/fixtures?date={today}&search={team_name[:5]}" 
+    # --- NEW SMART NAME CLEANER ---
+    words = team_name.replace('-', ' ').split()
+    clean_words = [w for w in words if len(w) > 2 and w.lower() not in ['fc', 'nk', 'fk', 'u20', 'u21', 'žnk', 'sbv', 'psv', 'w']]
+    
+    if clean_words:
+        search_term = max(clean_words, key=len)
+    else:
+        search_term = team_name[:5] 
+    # ------------------------------
+    
+    search_url = f"https://v3.football.api-sports.io/fixtures?date={today}&search={search_term}" 
     
     try:
         search_res = requests.get(search_url, headers=headers).json()
@@ -115,7 +124,6 @@ def get_api_football_facts(team_name):
                 data = pred_res['response'][0]
                 advice = data['predictions']['advice']
                 
-                # Check if league data exists for form
                 home_form = data['teams']['home']['league'].get('form', 'N/A') if data['teams']['home'].get('league') else 'N/A'
                 away_form = data['teams']['away']['league'].get('form', 'N/A') if data['teams']['away'].get('league') else 'N/A'
                 
@@ -196,7 +204,7 @@ def premium_bot_dashboard():
         my_bar = st.progress(0, text=progress_text)
         
         for i, target in enumerate(premium_targets):
-            # Update progress bar so the user knows it's working
+            # Update progress bar
             progress = (i + 1) / len(premium_targets)
             my_bar.progress(progress, text=f"Fact-Checking: {target['Home Team']}...")
             
