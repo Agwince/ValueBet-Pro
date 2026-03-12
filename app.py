@@ -54,6 +54,7 @@ def get_forebet_premium_targets():
                 try:
                     home_team = row.find('span', class_='homeTeam').text.strip()
                     away_team = row.find('span', class_='awayTeam').text.strip()
+                    
                     fprc_div = row.find('div', class_='fprc')
                     
                     if fprc_div:
@@ -66,11 +67,18 @@ def get_forebet_premium_targets():
                             if highest_prob >= 60:
                                 pick = home_team if home_prob >= 60 else away_team
                                 pick_odds = "N/A"
+                                
+                                # Grab the exact decimal odds
                                 haodd_div = row.find('div', class_='haodd')
                                 if haodd_div:
                                     odds_vals = [s.text.strip() for s in haodd_div.find_all('span') if '.' in s.text.strip()]
                                     if len(odds_vals) >= 3:
                                         pick_odds = odds_vals[0] if home_prob >= 60 else odds_vals[2]
+
+                                # 🛑 THE BOOKIE FILTER 🛑
+                                # If there are no odds, it means betting sites aren't tracking it. Skip it.
+                                if pick_odds == "N/A" or pick_odds == "-":
+                                    continue
 
                                 all_targets.append({
                                     'Home Team': home_team,
@@ -89,7 +97,8 @@ def get_forebet_premium_targets():
     for target in all_targets:
         del target['_raw_prob']
         
-    return all_targets[:10]
+    # We pull 20 targets now so the Auto-Builders have enough matches to hit 5-odds!
+    return all_targets[:20] 
 
 # ==========================================
 # 3. ENGINE 2: API-FOOTBALL FACT-CHECKER
@@ -97,7 +106,7 @@ def get_forebet_premium_targets():
 # 🛑 PASTE YOUR API KEY HERE ONCE 🛑
 API_KEY = "3b0601a38ca386edc1a448c3fb760a6e"
 
-@st.cache_data(ttl=3600) # Caches the global list for 1 hour so you don't burn your daily limit!
+@st.cache_data(ttl=3600)
 def get_todays_fixtures_master_list():
     today = datetime.now().strftime("%Y-%m-%d")
     url = f"https://v3.football.api-sports.io/fixtures?date={today}"
@@ -109,28 +118,23 @@ def get_todays_fixtures_master_list():
         return []
 
 def get_api_football_facts(team_name, todays_fixtures):
-    # --- SMART NAME CLEANER ---
     words = team_name.replace('-', ' ').split()
-    clean_words = [w for w in words if len(w) > 3 and w.lower() not in ['fc', 'nk', 'fk', 'u20', 'u21', 'žnk', 'sbv', 'psv', 'w', 'women', 'de']]
+    clean_words = [w for w in words if len(w) > 3 and w.lower() not in ['fc', 'nk', 'fk', 'žnk', 'sbv', 'psv']]
     
-    # Grab the longest remaining word to use as the core search term
     search_term = max(clean_words, key=len).lower() if clean_words else team_name[:5].lower()
     
-    # 1. Local Cross-Reference (Extremely Accurate)
     fixture_id = None
     for match in todays_fixtures:
         api_home = match['teams']['home']['name'].lower()
         api_away = match['teams']['away']['name'].lower()
         
-        # If our core search term is inside the official API name, we found our match!
         if search_term in api_home or search_term in api_away:
             fixture_id = match['fixture']['id']
             break
             
     if not fixture_id:
-        return None # Not playing today according to API-Sports (or name is completely different)
+        return None 
         
-    # 2. Extract Deep Stats from the Vault
     headers = {'x-apisports-key': API_KEY}
     pred_url = f"https://v3.football.api-sports.io/predictions?fixture={fixture_id}"
     
@@ -144,8 +148,8 @@ def get_api_football_facts(team_name, todays_fixtures):
             
             return {
                 "API Advice": advice,
-                "Home Form": home_form,
-                "Away Form": away_form
+                "Home Form": home_form[-5:] if home_form != 'N/A' else 'N/A', # Cleaner form display (last 5 matches)
+                "Away Form": away_form[-5:] if away_form != 'N/A' else 'N/A'
             }
     except:
         pass 
@@ -203,30 +207,25 @@ def premium_bot_dashboard():
     
     if st.button("🔍 Generate VIP Slips (Dual Engine Consensus)", type="primary", use_container_width=True):
         
-        # 1. AWAKEN THE FOREBET BRAIN
-        with st.spinner("🧠 Engine 1: Forebet scanning global matches for safe picks..."):
+        with st.spinner("🧠 Engine 1: Forebet scanning global matches for safe picks with valid odds..."):
             premium_targets = get_forebet_premium_targets()
             
         if not premium_targets:
-            st.warning("⚠️ Engine 1 says: No exceptionally safe matches today. Protect your bankroll!")
+            st.warning("⚠️ Engine 1 says: No exceptionally safe matches with bookmaker odds today. Protect your bankroll!")
             return
             
-        st.success(f"✅ Engine 1 found {len(premium_targets)} highly secure matches! Handing over to Engine 2...")
+        st.success(f"✅ Engine 1 found {len(premium_targets)} highly secure, bettable matches! Handing over to Engine 2...")
         
-        # 2. AWAKEN THE FACT-CHECKER
         verified_picks = []
-        
         my_bar = st.progress(0, text="🕵️ Engine 2: Downloading Master Daily Database...")
-        todays_fixtures = get_todays_fixtures_master_list() # Downloads the database once!
+        todays_fixtures = get_todays_fixtures_master_list() 
         
         for i, target in enumerate(premium_targets):
             progress = (i + 1) / len(premium_targets)
             my_bar.progress(progress, text=f"Fact-Checking against Master Database: {target['Home Team']}...")
             
-            # Ping local scanner instead of blind API searches
             facts = get_api_football_facts(target['Home Team'], todays_fixtures)
             
-            # Combine the data
             if facts:
                 target['API-Sports Advice'] = facts['API Advice']
                 target['Home Form'] = facts['Home Form']
@@ -240,11 +239,84 @@ def premium_bot_dashboard():
             
         my_bar.empty() 
         
-        # DISPLAY THE MASTER TABLE
+        # DISPLAY THE MASTER TABLE (SINGLES)
         st.subheader("💎 The God Mode Consensus Singles")
+        st.caption("Your core bankroll protection strategy. Look for matches where Forebet and API-Sports agree.")
         df_vip = pd.DataFrame(verified_picks)
         st.dataframe(df_vip, use_container_width=True, hide_index=True)
-        st.info("👆 Use these picks for your single daily bets. If Forebet's Pick matches the API-Sports Advice, you have a Diamond Tier lock.")
+        
+        # ==========================================
+        # MULTI-ODD VIP SLIP GENERATOR
+        # ==========================================
+        st.divider()
+        st.header("🎟️ VIP Auto-Builders")
+        st.write("Automatically mathematically assembled combination slips from today's highest-probability matches.")
+        
+        valid_matches = []
+        for p in verified_picks:
+            try:
+                # We only want matches that both have odds AND were found in the API Database
+                if p['Forebet Odds'] not in ["N/A", "-"] and p['API-Sports Advice'] != "No Match in Database":
+                    p['float_odds'] = float(p['Forebet Odds'])
+                    p['raw_prob'] = int(p['Win Probability'].replace('%', ''))
+                    valid_matches.append(p)
+            except:
+                continue
+                
+        valid_matches.sort(key=lambda x: x['raw_prob'], reverse=True)
+        
+        if len(valid_matches) < 2:
+            st.warning("Not enough high-quality matches with bookmaker odds to build accumulators today. Stick to singles!")
+        else:
+            col1, col2, col3 = st.columns(3)
+            
+            # --- 2-ODD DOUBLE ---
+            with col1:
+                st.subheader("🔥 2-Odd Double")
+                current_odds = 1.0
+                slip_2 = []
+                for match in valid_matches:
+                    if current_odds < 2.0 and len(slip_2) < 3: # Aim for 2 odds using safest matches
+                        slip_2.append(match)
+                        current_odds *= match['float_odds']
+                
+                for m in slip_2:
+                    st.success(f"**{m['Algorithm Pick']}**\n\nProb: {m['Win Probability']} | Odds: {m['Forebet Odds']}")
+                st.metric("Total Slip Odds", f"{current_odds:.2f}")
+
+            # --- 3-ODD TREBLE ---
+            with col2:
+                st.subheader("🚀 3-Odd Slip")
+                current_odds = 1.0
+                slip_3 = []
+                for match in valid_matches:
+                    if current_odds < 3.5: # Allow up to ~3.5 to hit the 3-odd mark safely
+                        slip_3.append(match)
+                        current_odds *= match['float_odds']
+                
+                if current_odds >= 2.5: 
+                    for m in slip_3:
+                        st.info(f"**{m['Algorithm Pick']}**\n\nOdds: {m['Forebet Odds']}")
+                    st.metric("Total Slip Odds", f"{current_odds:.2f}")
+                else:
+                    st.write("Not enough safe matches to hit 3+ odds.")
+
+            # --- 5-ODD ACCUMULATOR ---
+            with col3:
+                st.subheader("💎 5-Odd Slip")
+                current_odds = 1.0
+                slip_5 = []
+                for match in valid_matches:
+                    if current_odds < 5.5: 
+                        slip_5.append(match)
+                        current_odds *= match['float_odds']
+                
+                if current_odds >= 4.0:
+                    for m in slip_5:
+                        st.warning(f"**{m['Algorithm Pick']}**\n\nOdds: {m['Forebet Odds']}")
+                    st.metric("Total Slip Odds", f"{current_odds:.2f}")
+                else:
+                    st.write("Not enough safe matches to hit 5+ odds.")
 
 if st.session_state.current_user is None: home_and_register()
 else: premium_bot_dashboard()
