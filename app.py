@@ -4,8 +4,8 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 import json
-import requests  # Standard requests for the Odds API
-from curl_cffi import requests as curl_requests # Heavy artillery for Forebet
+import requests  
+from curl_cffi import requests as curl_requests 
 from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="ValueBet Algorithm Pro", layout="wide", page_icon="🤖")
@@ -33,9 +33,8 @@ if 'current_user' not in st.session_state:
     st.session_state.current_user = None
 
 # ==========================================
-# 2. THE BULLETPROOF FOREBET BRAIN (GOD MODE V2)
+# 2. THE BULLETPROOF FOREBET BRAIN (GOD MODE V3)
 # ==========================================
-# Notice: No caching! It gets fresh data every single time you click the button.
 def get_forebet_premium_targets():
     url = 'https://www.forebet.com/en/football-tips-and-predictions-for-today'
     all_targets = []
@@ -45,14 +44,12 @@ def get_forebet_premium_targets():
     }
     
     try:
-        # Using our ultimate TLS Spoofing weapon to bypass Streamlit server blocks!
         response = curl_requests.get(url, headers=headers, impersonate="chrome110", timeout=20)
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             match_rows = soup.find_all('div', class_='rcnt') 
             
-            # 🚨 DEBUG TRACKER: Tells us exactly what the bot sees!
             st.info(f"🕵️ System check: Successfully hacked Forebet. Extracted {len(match_rows)} raw matches from the database.")
             
             for row in match_rows:
@@ -68,12 +65,16 @@ def get_forebet_premium_targets():
                             away_prob = int(spans[2].text.strip())
                             highest_prob = max(home_prob, away_prob)
                             
-                            # Adaptive Filter: Take 60%+ to feed the VIPs
                             if highest_prob >= 60:
+                                # Determine the actual pick
+                                pick = home_team if home_prob >= 60 else away_team
+                                
                                 all_targets.append({
-                                    'home': home_team,
-                                    'away': away_team,
-                                    'prob': highest_prob
+                                    'Home Team': home_team,
+                                    'Away Team': away_team,
+                                    'Win Probability': f"{highest_prob}%",
+                                    'Algorithm Pick': f"🎯 {pick} to Win",
+                                    '_raw_prob': highest_prob # Hidden column for sorting
                                 })
                 except:
                     continue 
@@ -82,11 +83,12 @@ def get_forebet_premium_targets():
     except Exception as e:
         st.error(f"❌ Scraper crashed: {e}")
         
-    # Sort the list so the safest matches are always at the very top
-    all_targets = sorted(all_targets, key=lambda x: x['prob'], reverse=True)
+    all_targets = sorted(all_targets, key=lambda x: x['_raw_prob'], reverse=True)
     
-    # Return the Top 20 safest matches of the day
-    return all_targets[:20]
+    for target in all_targets:
+        del target['_raw_prob']
+        
+    return all_targets[:10]
 
 # ==========================================
 # 3. ODDS API HELPERS
@@ -166,28 +168,33 @@ def premium_bot_dashboard():
             st.warning("⚠️ Forebet Brain says: No exceptionally safe matches today. Protect your bankroll!")
             return
             
-        st.success(f"✅ Forebet found the Top {len(premium_targets)} secure matches. Cross-checking with bookmakers...")
+        st.success(f"✅ Forebet found {len(premium_targets)} highly secure matches!")
         
-        # 2. CHECK ODDS API
+        # DISPLAY THE RAW VIP PICKS FIRST (So users ALWAYS get their daily matches)
+        st.subheader("🔥 Today's VIP Bankroll Builders (Forebet Math)")
+        df_vip = pd.DataFrame(premium_targets)
+        st.dataframe(df_vip, use_container_width=True, hide_index=True)
+        st.info("👆 Use these picks on your local bookmaker for maximum safety.")
+        
+        # 2. CHECK ODDS API (As a bonus feature, not a roadblock)
         API_KEYS = ['12ec16da595cafd5f9a5fd2afaa685f9', '789faf8bb53e104396c0f8f6b6fba1aa']
         working_key = next((k for k in API_KEYS if get_active_sports(k)), None)
         
         if not working_key:
-            st.error("🚨 API Limits Reached on all keys!")
+            st.error("🚨 API Limits Reached. Showing raw Forebet picks only.")
             return
             
         sports = get_active_sports(working_key)[:12]
         safe_bets_found = []
         
-        with st.spinner("Snipping bookies for value pricing..."):
+        with st.spinner("Snipping global bookies for bonus value pricing..."):
             for sport in sports:
                 matches = get_live_odds(sport['key'], working_key)
                 if not matches: continue
                 for match in matches:
-                    # THE FUZZY MATCHER
                     is_premium = False
                     for target in premium_targets:
-                        if target['home'].split()[0].lower() in match['home_team'].lower() or target['away'].split()[0].lower() in match['away_team'].lower():
+                        if target['Home Team'].split()[0].lower() in match['home_team'].lower() or target['Away Team'].split()[0].lower() in match['away_team'].lower():
                             is_premium = True
                             break
                             
@@ -215,12 +222,11 @@ def premium_bot_dashboard():
                                     })
                                     
         if safe_bets_found:
-            df = pd.DataFrame(safe_bets_found).drop_duplicates(subset=['Match', 'Market']).sort_values(by='Odds').reset_index(drop=True)
-            st.subheader("🟢 The God Mode Double (2 Odds)")
-            st.dataframe(df.head(2), use_container_width=True, hide_index=True)
-            st.info(f"These teams passed the mathematical filter AND have Pinnacle value.")
+            df_odds = pd.DataFrame(safe_bets_found).drop_duplicates(subset=['Match', 'Market']).sort_values(by='Odds').reset_index(drop=True)
+            st.subheader("🟢 Bonus: The God Mode Value Snipes")
+            st.dataframe(df_odds.head(3), use_container_width=True, hide_index=True)
         else:
-            st.warning("Matches were safe, but bookies aren't offering profitable odds right now. Check back in an hour!")
+            st.caption("No extra global API value found for these matches right now. Stick to the VIP list above!")
 
 if st.session_state.current_user is None: home_and_register()
 else: premium_bot_dashboard()
