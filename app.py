@@ -33,13 +33,13 @@ if 'current_user' not in st.session_state:
     st.session_state.current_user = None
 
 # ==========================================
-# 2. THE FOREBET BRAIN (GOD MODE)
+# 2. THE ADAPTIVE FOREBET BRAIN (GOD MODE)
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False) # Caches the scraper for 1 hour
 def get_forebet_premium_targets():
     url = 'https://www.forebet.com/en/football-tips-and-predictions-for-today'
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
-    premium_targets = []
+    all_targets = []
     
     try:
         response = scraper.get(url, timeout=15)
@@ -58,20 +58,26 @@ def get_forebet_premium_targets():
                         if len(spans) >= 3:
                             home_prob = int(spans[0].text.strip())
                             away_prob = int(spans[2].text.strip())
+                            highest_prob = max(home_prob, away_prob)
                             
-                            # THE STRICT 75% FILTER
-                            if home_prob >= 75 or away_prob >= 75:
-                                premium_targets.append({
+                            # THE NEW ADAPTIVE FILTER: 
+                            # Take anything 60% or higher to guarantee daily action
+                            if highest_prob >= 60:
+                                all_targets.append({
                                     'home': home_team,
                                     'away': away_team,
-                                    'prob': max(home_prob, away_prob)
+                                    'prob': highest_prob
                                 })
                 except:
                     continue 
     except Exception as e:
-        pass # If Forebet fails, we just return an empty list
+        pass 
         
-    return premium_targets
+    # Sort the list so the safest matches are always at the very top
+    all_targets = sorted(all_targets, key=lambda x: x['prob'], reverse=True)
+    
+    # Return the Top 10 safest matches of the day
+    return all_targets[:10]
 
 # ==========================================
 # 3. ODDS API HELPERS
@@ -144,14 +150,14 @@ def premium_bot_dashboard():
     if st.button("🔍 Generate VIP Slips (Forebet + Pinnacle Filter)", type="primary", use_container_width=True):
         
         # 1. AWAKEN THE FOREBET BRAIN
-        with st.spinner("🧠 Booting Forebet Brain: Scanning global matches for 75%+ win probabilities..."):
+        with st.spinner("🧠 Booting Forebet Brain: Scanning global matches for safe picks..."):
             premium_targets = get_forebet_premium_targets()
             
         if not premium_targets:
             st.warning("⚠️ Forebet Brain says: No exceptionally safe matches today. Protect your bankroll!")
             return
             
-        st.success(f"✅ Forebet found {len(premium_targets)} highly secure matches. Cross-checking with bookmakers...")
+        st.success(f"✅ Forebet found the Top {len(premium_targets)} secure matches. Cross-checking with bookmakers...")
         
         # 2. CHECK ODDS API
         API_KEYS = ['12ec16da595cafd5f9a5fd2afaa685f9', '789faf8bb53e104396c0f8f6b6fba1aa']
@@ -169,7 +175,7 @@ def premium_bot_dashboard():
                 matches = get_live_odds(sport['key'], working_key)
                 if not matches: continue
                 for match in matches:
-                    # THE FUZZY MATCHER: Check if this match is in our Forebet VIP list
+                    # THE FUZZY MATCHER
                     is_premium = False
                     for target in premium_targets:
                         # If the first word of the team name matches, we count it!
@@ -205,7 +211,7 @@ def premium_bot_dashboard():
             df = pd.DataFrame(safe_bets_found).drop_duplicates(subset=['Match', 'Market']).sort_values(by='Odds').reset_index(drop=True)
             st.subheader("🟢 The God Mode Double (2 Odds)")
             st.dataframe(df.head(2), use_container_width=True, hide_index=True)
-            st.info(f"These teams passed the 75% mathematical filter AND have Pinnacle value.")
+            st.info(f"These teams passed the mathematical filter AND have Pinnacle value.")
         else:
             st.warning("Matches were safe, but bookies aren't offering profitable odds right now. Check back in an hour!")
 
