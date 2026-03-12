@@ -92,47 +92,62 @@ def get_forebet_premium_targets():
     return all_targets[:10]
 
 # ==========================================
-# 3. ENGINE 2: API-FOOTBALL FACT-CHECKER (WITH SMART FILTER)
+# 3. ENGINE 2: API-FOOTBALL FACT-CHECKER
 # ==========================================
-def get_api_football_facts(team_name):
-    # 🛑 PASTE YOUR API KEY HERE 🛑
-    api_key = "3b0601a38ca386edc1a448c3fb760a6e"
-    headers = {'x-apisports-key': api_key}
+# 🛑 PASTE YOUR API KEY HERE ONCE 🛑
+API_KEY = "3b0601a38ca386edc1a448c3fb760a6e"
+
+@st.cache_data(ttl=3600) # Caches the global list for 1 hour so you don't burn your daily limit!
+def get_todays_fixtures_master_list():
     today = datetime.now().strftime("%Y-%m-%d")
-    
-    # --- NEW SMART NAME CLEANER ---
+    url = f"https://v3.football.api-sports.io/fixtures?date={today}"
+    headers = {'x-apisports-key': API_KEY}
+    try:
+        res = requests.get(url, headers=headers).json()
+        return res.get('response', [])
+    except:
+        return []
+
+def get_api_football_facts(team_name, todays_fixtures):
+    # --- SMART NAME CLEANER ---
     words = team_name.replace('-', ' ').split()
-    clean_words = [w for w in words if len(w) > 2 and w.lower() not in ['fc', 'nk', 'fk', 'u20', 'u21', 'žnk', 'sbv', 'psv', 'w']]
+    clean_words = [w for w in words if len(w) > 3 and w.lower() not in ['fc', 'nk', 'fk', 'u20', 'u21', 'žnk', 'sbv', 'psv', 'w', 'women', 'de']]
     
-    if clean_words:
-        search_term = max(clean_words, key=len)
-    else:
-        search_term = team_name[:5] 
-    # ------------------------------
+    # Grab the longest remaining word to use as the core search term
+    search_term = max(clean_words, key=len).lower() if clean_words else team_name[:5].lower()
     
-    search_url = f"https://v3.football.api-sports.io/fixtures?date={today}&search={search_term}" 
+    # 1. Local Cross-Reference (Extremely Accurate)
+    fixture_id = None
+    for match in todays_fixtures:
+        api_home = match['teams']['home']['name'].lower()
+        api_away = match['teams']['away']['name'].lower()
+        
+        # If our core search term is inside the official API name, we found our match!
+        if search_term in api_home or search_term in api_away:
+            fixture_id = match['fixture']['id']
+            break
+            
+    if not fixture_id:
+        return None # Not playing today according to API-Sports (or name is completely different)
+        
+    # 2. Extract Deep Stats from the Vault
+    headers = {'x-apisports-key': API_KEY}
+    pred_url = f"https://v3.football.api-sports.io/predictions?fixture={fixture_id}"
     
     try:
-        search_res = requests.get(search_url, headers=headers).json()
-        if search_res.get('response'):
-            fixture_id = search_res['response'][0]['fixture']['id']
+        pred_res = requests.get(pred_url, headers=headers).json()
+        if pred_res.get('response'):
+            data = pred_res['response'][0]
+            advice = data['predictions']['advice']
+            home_form = data['teams']['home']['league'].get('form', 'N/A') if data['teams']['home'].get('league') else 'N/A'
+            away_form = data['teams']['away']['league'].get('form', 'N/A') if data['teams']['away'].get('league') else 'N/A'
             
-            pred_url = f"https://v3.football.api-sports.io/predictions?fixture={fixture_id}"
-            pred_res = requests.get(pred_url, headers=headers).json()
-            
-            if pred_res.get('response'):
-                data = pred_res['response'][0]
-                advice = data['predictions']['advice']
-                
-                home_form = data['teams']['home']['league'].get('form', 'N/A') if data['teams']['home'].get('league') else 'N/A'
-                away_form = data['teams']['away']['league'].get('form', 'N/A') if data['teams']['away'].get('league') else 'N/A'
-                
-                return {
-                    "API Advice": advice,
-                    "Home Form": home_form,
-                    "Away Form": away_form
-                }
-    except Exception as e:
+            return {
+                "API Advice": advice,
+                "Home Form": home_form,
+                "Away Form": away_form
+            }
+    except:
         pass 
         
     return None
@@ -200,16 +215,16 @@ def premium_bot_dashboard():
         
         # 2. AWAKEN THE FACT-CHECKER
         verified_picks = []
-        progress_text = "🕵️ Engine 2: Fact-Checking matches via API-Football..."
-        my_bar = st.progress(0, text=progress_text)
+        
+        my_bar = st.progress(0, text="🕵️ Engine 2: Downloading Master Daily Database...")
+        todays_fixtures = get_todays_fixtures_master_list() # Downloads the database once!
         
         for i, target in enumerate(premium_targets):
-            # Update progress bar
             progress = (i + 1) / len(premium_targets)
-            my_bar.progress(progress, text=f"Fact-Checking: {target['Home Team']}...")
+            my_bar.progress(progress, text=f"Fact-Checking against Master Database: {target['Home Team']}...")
             
-            # Ping API-Football
-            facts = get_api_football_facts(target['Home Team'])
+            # Ping local scanner instead of blind API searches
+            facts = get_api_football_facts(target['Home Team'], todays_fixtures)
             
             # Combine the data
             if facts:
@@ -217,13 +232,13 @@ def premium_bot_dashboard():
                 target['Home Form'] = facts['Home Form']
                 target['Away Form'] = facts['Away Form']
             else:
-                target['API-Sports Advice'] = "Data Unavailable"
+                target['API-Sports Advice'] = "No Match in Database"
                 target['Home Form'] = "N/A"
                 target['Away Form'] = "N/A"
                 
             verified_picks.append(target)
             
-        my_bar.empty() # Clear the progress bar when done
+        my_bar.empty() 
         
         # DISPLAY THE MASTER TABLE
         st.subheader("💎 The God Mode Consensus Singles")
