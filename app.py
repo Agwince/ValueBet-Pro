@@ -33,7 +33,7 @@ if 'current_user' not in st.session_state:
     st.session_state.current_user = None
 
 # ==========================================
-# 2. THE BULLETPROOF FOREBET BRAIN (GOD MODE V3)
+# 2. ENGINE 1: BULLETPROOF FOREBET BRAIN
 # ==========================================
 def get_forebet_premium_targets():
     url = 'https://www.forebet.com/en/football-tips-and-predictions-for-today'
@@ -50,8 +50,6 @@ def get_forebet_premium_targets():
             soup = BeautifulSoup(response.text, 'html.parser')
             match_rows = soup.find_all('div', class_='rcnt') 
             
-            st.info(f"🕵️ System check: Successfully hacked Forebet. Extracted {len(match_rows)} raw matches from the database.")
-            
             for row in match_rows:
                 try:
                     home_team = row.find('span', class_='homeTeam').text.strip()
@@ -66,32 +64,73 @@ def get_forebet_premium_targets():
                             highest_prob = max(home_prob, away_prob)
                             
                             if highest_prob >= 60:
-                                # Determine the actual pick
                                 pick = home_team if home_prob >= 60 else away_team
-                                
+                                pick_odds = "N/A"
+                                haodd_div = row.find('div', class_='haodd')
+                                if haodd_div:
+                                    odds_vals = [s.text.strip() for s in haodd_div.find_all('span') if '.' in s.text.strip()]
+                                    if len(odds_vals) >= 3:
+                                        pick_odds = odds_vals[0] if home_prob >= 60 else odds_vals[2]
+
                                 all_targets.append({
                                     'Home Team': home_team,
                                     'Away Team': away_team,
                                     'Win Probability': f"{highest_prob}%",
                                     'Algorithm Pick': f"🎯 {pick} to Win",
-                                    '_raw_prob': highest_prob # Hidden column for sorting
+                                    'Forebet Odds': pick_odds,
+                                    '_raw_prob': highest_prob 
                                 })
                 except:
                     continue 
-        else:
-            st.error(f"🚨 Forebet blocked the Streamlit server! Status: {response.status_code}")
     except Exception as e:
-        st.error(f"❌ Scraper crashed: {e}")
+        st.error(f"❌ Engine 1 crashed: {e}")
         
     all_targets = sorted(all_targets, key=lambda x: x['_raw_prob'], reverse=True)
-    
     for target in all_targets:
         del target['_raw_prob']
         
     return all_targets[:10]
 
 # ==========================================
-# 3. ODDS API HELPERS
+# 3. ENGINE 2: API-FOOTBALL FACT-CHECKER
+# ==========================================
+def get_api_football_facts(team_name):
+    # 🛑 PASTE YOUR API KEY HERE 🛑
+    api_key = "PASTE_YOUR_KEY_HERE"
+    headers = {'x-apisports-key': api_key}
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    # Use the first 5 letters of the team to ensure a fuzzy match between platforms
+    search_url = f"https://v3.football.api-sports.io/fixtures?date={today}&search={team_name[:5]}" 
+    
+    try:
+        search_res = requests.get(search_url, headers=headers).json()
+        if search_res.get('response'):
+            fixture_id = search_res['response'][0]['fixture']['id']
+            
+            pred_url = f"https://v3.football.api-sports.io/predictions?fixture={fixture_id}"
+            pred_res = requests.get(pred_url, headers=headers).json()
+            
+            if pred_res.get('response'):
+                data = pred_res['response'][0]
+                advice = data['predictions']['advice']
+                
+                # Check if league data exists for form
+                home_form = data['teams']['home']['league'].get('form', 'N/A') if data['teams']['home'].get('league') else 'N/A'
+                away_form = data['teams']['away']['league'].get('form', 'N/A') if data['teams']['away'].get('league') else 'N/A'
+                
+                return {
+                    "API Advice": advice,
+                    "Home Form": home_form,
+                    "Away Form": away_form
+                }
+    except Exception as e:
+        pass 
+        
+    return None
+
+# ==========================================
+# 4. DASHBOARDS
 # ==========================================
 def get_all_users(): return users_sheet.get_all_records()
 def get_all_pending(): return pending_sheet.get_all_records()
@@ -99,25 +138,6 @@ def get_all_results(): return results_sheet.get_all_records() if results_sheet e
 def check_expiry(user_record):
     return datetime.now().date() <= datetime.strptime(user_record['expiry'], "%Y-%m-%d").date()
 
-@st.cache_data(ttl=7200, show_spinner=False)
-def get_active_sports(api_key):
-    res = requests.get(f'https://api.the-odds-api.com/v4/sports?api_key={api_key}')
-    return res.json() if res.status_code == 200 else None
-
-@st.cache_data(ttl=7200, show_spinner=False)
-def get_live_odds(sport_key, api_key):
-    url = f'https://api.the-odds-api.com/v4/sports/{sport_key}/odds'
-    res = requests.get(url, params={'api_key': api_key, 'regions': 'eu,uk', 'markets': 'h2h,totals', 'oddsFormat': 'decimal'})
-    return res.json() if res.status_code == 200 else None
-
-def calculate_true_odds(pinnacle_odds):
-    implied_probs = {outcome: (1 / odds) for outcome, odds in pinnacle_odds.items()}
-    total_margin = sum(implied_probs.values())
-    return {outcome: round(1 / (implied / total_margin), 2) for outcome, implied in implied_probs.items()}
-
-# ==========================================
-# 4. DASHBOARDS
-# ==========================================
 def home_and_register():
     st.title("🤖 ValueBet Algorithm Pro")
     tab_login, tab_verify = st.tabs(["🔓 Login & Join", "📊 Verified Results"])
@@ -158,75 +178,50 @@ def premium_bot_dashboard():
         st.rerun()
     st.divider()
     
-    if st.button("🔍 Generate VIP Slips (Forebet + Pinnacle Filter)", type="primary", use_container_width=True):
+    if st.button("🔍 Generate VIP Slips (Dual Engine Consensus)", type="primary", use_container_width=True):
         
         # 1. AWAKEN THE FOREBET BRAIN
-        with st.spinner("🧠 Booting Forebet Brain: Scanning global matches for safe picks..."):
+        with st.spinner("🧠 Engine 1: Forebet scanning global matches for safe picks..."):
             premium_targets = get_forebet_premium_targets()
             
         if not premium_targets:
-            st.warning("⚠️ Forebet Brain says: No exceptionally safe matches today. Protect your bankroll!")
+            st.warning("⚠️ Engine 1 says: No exceptionally safe matches today. Protect your bankroll!")
             return
             
-        st.success(f"✅ Forebet found {len(premium_targets)} highly secure matches!")
+        st.success(f"✅ Engine 1 found {len(premium_targets)} highly secure matches! Handing over to Engine 2...")
         
-        # DISPLAY THE RAW VIP PICKS FIRST (So users ALWAYS get their daily matches)
-        st.subheader("🔥 Today's VIP Bankroll Builders (Forebet Math)")
-        df_vip = pd.DataFrame(premium_targets)
+        # 2. AWAKEN THE FACT-CHECKER
+        verified_picks = []
+        progress_text = "🕵️ Engine 2: Fact-Checking matches via API-Football..."
+        my_bar = st.progress(0, text=progress_text)
+        
+        for i, target in enumerate(premium_targets):
+            # Update progress bar so the user knows it's working
+            progress = (i + 1) / len(premium_targets)
+            my_bar.progress(progress, text=f"Fact-Checking: {target['Home Team']}...")
+            
+            # Ping API-Football
+            facts = get_api_football_facts(target['Home Team'])
+            
+            # Combine the data
+            if facts:
+                target['API-Sports Advice'] = facts['API Advice']
+                target['Home Form'] = facts['Home Form']
+                target['Away Form'] = facts['Away Form']
+            else:
+                target['API-Sports Advice'] = "Data Unavailable"
+                target['Home Form'] = "N/A"
+                target['Away Form'] = "N/A"
+                
+            verified_picks.append(target)
+            
+        my_bar.empty() # Clear the progress bar when done
+        
+        # DISPLAY THE MASTER TABLE
+        st.subheader("💎 The God Mode Consensus Singles")
+        df_vip = pd.DataFrame(verified_picks)
         st.dataframe(df_vip, use_container_width=True, hide_index=True)
-        st.info("👆 Use these picks on your local bookmaker for maximum safety.")
-        
-        # 2. CHECK ODDS API (As a bonus feature, not a roadblock)
-        API_KEYS = ['12ec16da595cafd5f9a5fd2afaa685f9', '789faf8bb53e104396c0f8f6b6fba1aa']
-        working_key = next((k for k in API_KEYS if get_active_sports(k)), None)
-        
-        if not working_key:
-            st.error("🚨 API Limits Reached. Showing raw Forebet picks only.")
-            return
-            
-        sports = get_active_sports(working_key)[:12]
-        safe_bets_found = []
-        
-        with st.spinner("Snipping global bookies for bonus value pricing..."):
-            for sport in sports:
-                matches = get_live_odds(sport['key'], working_key)
-                if not matches: continue
-                for match in matches:
-                    is_premium = False
-                    for target in premium_targets:
-                        if target['Home Team'].split()[0].lower() in match['home_team'].lower() or target['Away Team'].split()[0].lower() in match['away_team'].lower():
-                            is_premium = True
-                            break
-                            
-                    if not is_premium:
-                        continue 
-
-                    bookies = match.get('bookmakers', [])
-                    pinnacle_data = next((b for b in bookies if b['key'] == 'pinnacle'), None)
-                    if pinnacle_data and pinnacle_data.get('markets'):
-                        market = pinnacle_data['markets'][0]
-                        true_odds = calculate_true_odds({i['name']: i['price'] for i in market['outcomes']})
-                        
-                        for bookie in bookies:
-                            if bookie['key'] == 'pinnacle': continue
-                            soft_market = next((m for m in bookie.get('markets', []) if m['key'] == market['key']), None)
-                            if not soft_market: continue
-                            for outcome in soft_market['outcomes']:
-                                fair_price = true_odds.get(outcome['name'])
-                                if fair_price and 1.10 <= fair_price <= 2.20:
-                                    safe_bets_found.append({
-                                        "Match": f"{match['home_team']} vs {match['away_team']}",
-                                        "Market": outcome['name'],
-                                        "Bookie": bookie['title'].upper(),
-                                        "Odds": outcome['price']
-                                    })
-                                    
-        if safe_bets_found:
-            df_odds = pd.DataFrame(safe_bets_found).drop_duplicates(subset=['Match', 'Market']).sort_values(by='Odds').reset_index(drop=True)
-            st.subheader("🟢 Bonus: The God Mode Value Snipes")
-            st.dataframe(df_odds.head(3), use_container_width=True, hide_index=True)
-        else:
-            st.caption("No extra global API value found for these matches right now. Stick to the VIP list above!")
+        st.info("👆 Use these picks for your single daily bets. If Forebet's Pick matches the API-Sports Advice, you have a Diamond Tier lock.")
 
 if st.session_state.current_user is None: home_and_register()
 else: premium_bot_dashboard()
