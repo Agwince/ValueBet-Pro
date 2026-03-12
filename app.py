@@ -100,7 +100,7 @@ def get_forebet_premium_targets():
 # 3. ENGINE 2: API-FOOTBALL FACT-CHECKER
 # ==========================================
 # 🛑 PASTE YOUR API KEY HERE ONCE 🛑
-API_KEY = "PASTE_YOUR_KEY_HERE"
+API_KEY = "3b0601a38ca386edc1a448c3fb760a6e"
 
 @st.cache_data(ttl=3600)
 def get_todays_fixtures_master_list():
