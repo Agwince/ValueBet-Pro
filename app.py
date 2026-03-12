@@ -64,21 +64,18 @@ def get_forebet_premium_targets():
                             away_prob = int(spans[2].text.strip())
                             highest_prob = max(home_prob, away_prob)
                             
-                            if highest_prob >= 60:
-                                pick = home_team if home_prob >= 60 else away_team
+                            # Lowered slightly to 55% to ensure enough volume for accumulators
+                            if highest_prob >= 55: 
+                                pick = home_team if home_prob >= 55 else away_team
                                 pick_odds = "N/A"
                                 
-                                # Grab the exact decimal odds
+                                # UPGRADED ODDS SCRAPER
                                 haodd_div = row.find('div', class_='haodd')
                                 if haodd_div:
-                                    odds_vals = [s.text.strip() for s in haodd_div.find_all('span') if '.' in s.text.strip()]
+                                    odds_vals = [s.text.strip() for s in haodd_div.find_all('span') if s.text.strip()]
                                     if len(odds_vals) >= 3:
-                                        pick_odds = odds_vals[0] if home_prob >= 60 else odds_vals[2]
-
-                                # 🛑 THE BOOKIE FILTER 🛑
-                                # If there are no odds, it means betting sites aren't tracking it. Skip it.
-                                if pick_odds == "N/A" or pick_odds == "-":
-                                    continue
+                                        # Home is usually first [0], Away is usually last [-1]
+                                        pick_odds = odds_vals[0] if home_prob >= 55 else odds_vals[-1]
 
                                 all_targets.append({
                                     'Home Team': home_team,
@@ -97,14 +94,13 @@ def get_forebet_premium_targets():
     for target in all_targets:
         del target['_raw_prob']
         
-    # We pull 20 targets now so the Auto-Builders have enough matches to hit 5-odds!
     return all_targets[:20] 
 
 # ==========================================
 # 3. ENGINE 2: API-FOOTBALL FACT-CHECKER
 # ==========================================
 # 🛑 PASTE YOUR API KEY HERE ONCE 🛑
-API_KEY = "3b0601a38ca386edc1a448c3fb760a6e"
+API_KEY = "PASTE_YOUR_KEY_HERE"
 
 @st.cache_data(ttl=3600)
 def get_todays_fixtures_master_list():
@@ -148,7 +144,7 @@ def get_api_football_facts(team_name, todays_fixtures):
             
             return {
                 "API Advice": advice,
-                "Home Form": home_form[-5:] if home_form != 'N/A' else 'N/A', # Cleaner form display (last 5 matches)
+                "Home Form": home_form[-5:] if home_form != 'N/A' else 'N/A', 
                 "Away Form": away_form[-5:] if away_form != 'N/A' else 'N/A'
             }
     except:
@@ -207,14 +203,14 @@ def premium_bot_dashboard():
     
     if st.button("🔍 Generate VIP Slips (Dual Engine Consensus)", type="primary", use_container_width=True):
         
-        with st.spinner("🧠 Engine 1: Forebet scanning global matches for safe picks with valid odds..."):
+        with st.spinner("🧠 Engine 1: Forebet scanning global matches for safe picks..."):
             premium_targets = get_forebet_premium_targets()
             
         if not premium_targets:
-            st.warning("⚠️ Engine 1 says: No exceptionally safe matches with bookmaker odds today. Protect your bankroll!")
+            st.warning("⚠️ Engine 1 says: No exceptionally safe matches today. Protect your bankroll!")
             return
             
-        st.success(f"✅ Engine 1 found {len(premium_targets)} highly secure, bettable matches! Handing over to Engine 2...")
+        st.success(f"✅ Engine 1 found {len(premium_targets)} highly secure matches! Handing over to Engine 2...")
         
         verified_picks = []
         my_bar = st.progress(0, text="🕵️ Engine 2: Downloading Master Daily Database...")
@@ -256,7 +252,7 @@ def premium_bot_dashboard():
         for p in verified_picks:
             try:
                 # We only want matches that both have odds AND were found in the API Database
-                if p['Forebet Odds'] not in ["N/A", "-"] and p['API-Sports Advice'] != "No Match in Database":
+                if p['Forebet Odds'] not in ["N/A", "-", ""] and p['API-Sports Advice'] != "No Match in Database":
                     p['float_odds'] = float(p['Forebet Odds'])
                     p['raw_prob'] = int(p['Win Probability'].replace('%', ''))
                     valid_matches.append(p)
@@ -266,7 +262,7 @@ def premium_bot_dashboard():
         valid_matches.sort(key=lambda x: x['raw_prob'], reverse=True)
         
         if len(valid_matches) < 2:
-            st.warning("Not enough high-quality matches with bookmaker odds to build accumulators today. Stick to singles!")
+            st.warning("Not enough high-quality matches with bookmaker odds to build accumulators today. Stick to singles from the table above!")
         else:
             col1, col2, col3 = st.columns(3)
             
@@ -276,7 +272,7 @@ def premium_bot_dashboard():
                 current_odds = 1.0
                 slip_2 = []
                 for match in valid_matches:
-                    if current_odds < 2.0 and len(slip_2) < 3: # Aim for 2 odds using safest matches
+                    if current_odds < 2.0 and len(slip_2) < 3: 
                         slip_2.append(match)
                         current_odds *= match['float_odds']
                 
@@ -290,7 +286,7 @@ def premium_bot_dashboard():
                 current_odds = 1.0
                 slip_3 = []
                 for match in valid_matches:
-                    if current_odds < 3.5: # Allow up to ~3.5 to hit the 3-odd mark safely
+                    if current_odds < 3.5: 
                         slip_3.append(match)
                         current_odds *= match['float_odds']
                 
