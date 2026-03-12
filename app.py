@@ -74,17 +74,16 @@ def get_forebet_premium_targets():
                                     if len(odds_vals) >= 3:
                                         pick_odds = odds_vals[0] if home_prob >= 55 else odds_vals[-1]
 
-                                # --- NEW: AMERICAN TO DECIMAL ODDS CONVERTER ---
+                                # AMERICAN TO DECIMAL ODDS CONVERTER
                                 try:
                                     if pick_odds not in ["N/A", "-", "no", ""]:
                                         val = float(pick_odds.replace('+', ''))
-                                        if val <= -100: # Negative American (e.g. -303)
+                                        if val <= -100: 
                                             pick_odds = str(round(1 - (100 / val), 2))
-                                        elif val >= 100: # Positive American (e.g. +150)
+                                        elif val >= 100: 
                                             pick_odds = str(round(1 + (val / 100), 2))
                                 except:
-                                    pass # If the math fails, leave it as is so it can be filtered later
-                                # ----------------------------------------------
+                                    pass 
 
                                 all_targets.append({
                                     'Home Team': home_team,
@@ -260,7 +259,6 @@ def premium_bot_dashboard():
         valid_matches = []
         for p in verified_picks:
             try:
-                # Upgraded Trash Filter: Removes "N/A", "-", "", and "no"
                 if str(p['Forebet Odds']).lower() not in ["n/a", "-", "", "no"] and p['API-Sports Advice'] != "No Match in Database":
                     p['float_odds'] = float(p['Forebet Odds'])
                     p['raw_prob'] = int(p['Win Probability'].replace('%', ''))
@@ -275,51 +273,62 @@ def premium_bot_dashboard():
         else:
             col1, col2, col3 = st.columns(3)
             
-            # --- 2-ODD DOUBLE ---
+            # --- ULTRA-SAFE 2-ODD DOUBLE ---
             with col1:
-                st.subheader("🔥 2-Odd Double")
-                current_odds = 1.0
+                st.subheader("🔥 Ultra-Safe 2-Odd")
+                st.caption("No guesses. Only heavy favorites.")
+                current_odds_2 = 1.0
                 slip_2 = []
-                for match in valid_matches:
-                    if current_odds < 2.0 and len(slip_2) < 3: 
-                        slip_2.append(match)
-                        current_odds *= match['float_odds']
                 
-                for m in slip_2:
-                    st.success(f"**{m['Algorithm Pick']}**\n\nProb: {m['Win Probability']} | Odds: {m['Forebet Odds']}")
-                st.metric("Total Slip Odds", f"{current_odds:.2f}")
+                # STRICT FILTER: Only matches with odds of 1.60 or less!
+                safe_matches = [m for m in valid_matches if m['float_odds'] <= 1.60]
+                
+                for match in safe_matches:
+                    if current_odds_2 < 2.2 and len(slip_2) < 4: 
+                        slip_2.append(match)
+                        current_odds_2 *= match['float_odds']
+                
+                if current_odds_2 >= 1.4: # Only display if we actually found safe matches
+                    for m in slip_2:
+                        st.success(f"**{m['Algorithm Pick']}**\n\nProb: {m['Win Probability']} | Odds: {m['Forebet Odds']}")
+                    st.metric("Total Slip Odds", f"{current_odds_2:.2f}")
+                else:
+                    st.write("No ultra-safe combinations available today. Do not force a bet!")
 
             # --- 3-ODD TREBLE ---
             with col2:
                 st.subheader("🚀 3-Odd Slip")
-                current_odds = 1.0
+                st.caption("Standard VIP accumulator.")
+                current_odds_3 = 1.0
                 slip_3 = []
                 for match in valid_matches:
-                    if current_odds < 3.5: 
+                    # Allow riskier matches here to build the 3-odd slip
+                    if current_odds_3 < 3.5: 
                         slip_3.append(match)
-                        current_odds *= match['float_odds']
+                        current_odds_3 *= match['float_odds']
                 
-                if current_odds >= 2.5: 
+                if current_odds_3 >= 2.5: 
                     for m in slip_3:
-                        st.info(f"**{m['Algorithm Pick']}**\n\nOdds: {m['Forebet Odds']}")
-                    st.metric("Total Slip Odds", f"{current_odds:.2f}")
+                        st.info(f"**{m['Algorithm Pick']}**\n\nProb: {m['Win Probability']} | Odds: {m['Forebet Odds']}")
+                    st.metric("Total Slip Odds", f"{current_odds_3:.2f}")
                 else:
                     st.write("Not enough safe matches to hit 3+ odds.")
 
             # --- 5-ODD ACCUMULATOR ---
             with col3:
                 st.subheader("💎 5-Odd Slip")
-                current_odds = 1.0
+                st.caption("High-yield Jackpot swing.")
+                current_odds_5 = 1.0
                 slip_5 = []
                 for match in valid_matches:
-                    if current_odds < 5.5: 
+                    if current_odds_5 < 5.5: 
                         slip_5.append(match)
-                        current_odds *= match['float_odds']
+                        current_odds_5 *= match['float_odds']
                 
-                if current_odds >= 4.0:
+                if current_odds_5 >= 4.0:
                     for m in slip_5:
-                        st.warning(f"**{m['Algorithm Pick']}**\n\nOdds: {m['Forebet Odds']}")
-                    st.metric("Total Slip Odds", f"{current_odds:.2f}")
+                        st.warning(f"**{m['Algorithm Pick']}**\n\nProb: {m['Win Probability']} | Odds: {m['Forebet Odds']}")
+                    st.metric("Total Slip Odds", f"{current_odds_5:.2f}")
                 else:
                     st.write("Not enough safe matches to hit 5+ odds.")
 
