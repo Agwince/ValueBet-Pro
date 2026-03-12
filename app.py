@@ -64,18 +64,27 @@ def get_forebet_premium_targets():
                             away_prob = int(spans[2].text.strip())
                             highest_prob = max(home_prob, away_prob)
                             
-                            # Lowered slightly to 55% to ensure enough volume for accumulators
                             if highest_prob >= 55: 
                                 pick = home_team if home_prob >= 55 else away_team
                                 pick_odds = "N/A"
                                 
-                                # UPGRADED ODDS SCRAPER
                                 haodd_div = row.find('div', class_='haodd')
                                 if haodd_div:
                                     odds_vals = [s.text.strip() for s in haodd_div.find_all('span') if s.text.strip()]
                                     if len(odds_vals) >= 3:
-                                        # Home is usually first [0], Away is usually last [-1]
                                         pick_odds = odds_vals[0] if home_prob >= 55 else odds_vals[-1]
+
+                                # --- NEW: AMERICAN TO DECIMAL ODDS CONVERTER ---
+                                try:
+                                    if pick_odds not in ["N/A", "-", "no", ""]:
+                                        val = float(pick_odds.replace('+', ''))
+                                        if val <= -100: # Negative American (e.g. -303)
+                                            pick_odds = str(round(1 - (100 / val), 2))
+                                        elif val >= 100: # Positive American (e.g. +150)
+                                            pick_odds = str(round(1 + (val / 100), 2))
+                                except:
+                                    pass # If the math fails, leave it as is so it can be filtered later
+                                # ----------------------------------------------
 
                                 all_targets.append({
                                     'Home Team': home_team,
@@ -251,8 +260,8 @@ def premium_bot_dashboard():
         valid_matches = []
         for p in verified_picks:
             try:
-                # We only want matches that both have odds AND were found in the API Database
-                if p['Forebet Odds'] not in ["N/A", "-", ""] and p['API-Sports Advice'] != "No Match in Database":
+                # Upgraded Trash Filter: Removes "N/A", "-", "", and "no"
+                if str(p['Forebet Odds']).lower() not in ["n/a", "-", "", "no"] and p['API-Sports Advice'] != "No Match in Database":
                     p['float_odds'] = float(p['Forebet Odds'])
                     p['raw_prob'] = int(p['Win Probability'].replace('%', ''))
                     valid_matches.append(p)
