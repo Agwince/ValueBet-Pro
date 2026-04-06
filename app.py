@@ -67,7 +67,7 @@ W_ATTACK     = 0.20   # Goals scored vs opponent defence
 W_DEFENCE    = 0.15   # Goals conceded vs opponent attack
 
 # Thresholds
-MIN_CONFIDENCE   = 65    # Our score out of 100 — raise to be stricter
+MIN_CONFIDENCE   = 55    # Lowered to 55 so more picks pass — raise back to 65 once working
 MIN_ODDS         = 1.25  # Below this, not worth the risk
 MAX_ODDS         = 1.90  # Above this, too uncertain for singles
 TARGET_ODDS_LOW  = 2.00  # Slip target (low end)
@@ -292,15 +292,17 @@ def run_analysis(debug=False):
     total   = len(trusted)
 
     bar = st.progress(0, text="Analysing matches...")
+    # Wait 10s before first call — fixtures fetch may have used some quota
+    time.sleep(10)
 
     for i, f in enumerate(trusted):
         bar.progress(
             (i + 1) / total,
             text=f"Checking ({i+1}/{total}): {f['teams']['home']['name']} vs {f['teams']['away']['name']}"
         )
-        # 13s between matches keeps us well under 10 req/min
+        # 20s between matches = 2 calls per 20s = 6 req/min = safely under limit
         if i > 0:
-            time.sleep(13)
+            time.sleep(20)
 
         fid        = f["fixture"]["id"]
         league_id  = f["league"]["id"]
