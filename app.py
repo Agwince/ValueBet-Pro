@@ -64,10 +64,11 @@ TRUSTED_LEAGUE_IDS = {
 # ==========================================
 # 3. ENGINE 1: FOREBET SCRAPER (STRICT MODE)
 # ==========================================
-def scrape_forebet_strict():
+def scrape_forebet_strict(debug=False):
     """
     Scrape Forebet but ONLY keep matches that pass strict filters.
     Returns list of candidate matches sorted by probability descending.
+    Set debug=True to show raw scraping diagnostics in the UI.
     """
     url = 'https://www.forebet.com/en/football-tips-and-predictions-for-today'
     candidates = []
@@ -80,20 +81,58 @@ def scrape_forebet_strict():
         )
     }
 
+    # --- Try multiple CSS class selectors since Forebet changes them ---
+    POSSIBLE_ROW_CLASSES = ['rcnt', 'tr_0', 'tr_1', 'schema', 'contentpanel']
+
     try:
         response = curl_requests.get(
-            url, headers=headers, impersonate="chrome110", timeout=20
+            url, headers=headers, impersonate="chrome110", timeout=25
         )
 
+        if debug:
+            st.code(f"HTTP Status: {response.status_code}\nResponse length: {len(response.text)} chars")
+
         if response.status_code != 200:
-            st.error(f"❌ Forebet returned status {response.status_code}")
+            st.error(f"❌ Forebet returned status {response.status_code}. Site may be blocking the scraper.")
             return []
 
         soup = BeautifulSoup(response.text, 'html.parser')
-        match_rows = soup.find_all('div', class_='rcnt')
+
+        # Try each known class until we find match rows
+        match_rows = []
+        used_class = None
+        for cls in POSSIBLE_ROW_CLASSES:
+            rows = soup.find_all('div', class_=cls)
+            if rows:
+                match_rows = rows
+                used_class = cls
+                break
+
+        if debug:
+            st.code(
+                f"CSS class used: '{used_class}'\n"
+                f"Raw rows found: {len(match_rows)}\n\n"
+                f"--- First 2000 chars of HTML (for diagnosis) ---\n"
+                f"{response.text[:2000]}"
+            )
 
         if not match_rows:
-            st.warning("⚠️ Forebet HTML structure may have changed. No match rows found.")
+            # Last resort: dump ALL div classes found so we can identify the right one
+            all_divs = soup.find_all('div', class_=True)
+            class_counts = {}
+            for d in all_divs:
+                for c in d.get('class', []):
+                    class_counts[c] = class_counts.get(c, 0) + 1
+            top_classes = sorted(class_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+
+            if debug:
+                st.warning("⚠️ No match rows found with any known class. Top div classes on page:")
+                st.json({k: v for k, v in top_classes})
+            else:
+                st.error(
+                    "❌ Forebet's HTML structure has changed and the scraper can't find matches. "
+                    "Enable **Debug Mode** in the sidebar to diagnose, or check if forebet.com is accessible."
+                )
             return []
 
         for row in match_rows:
@@ -419,9 +458,18 @@ def home_and_register():
 # ==========================================
 def premium_bot_dashboard():
     st.title("📈 ValueBet God Mode")
-    if st.button("Logout"):
-        st.session_state.current_user = None
-        st.rerun()
+
+    # --- Sidebar controls ---
+    with st.sidebar:
+        st.header("⚙️ Settings")
+        debug_mode = st.toggle("🔬 Debug Mode", value=False,
+                               help="Shows raw scraping data to diagnose issues")
+        st.caption("Turn this on if you see 'No matches' and want to find out why.")
+        st.divider()
+        st.write(f"👤 Logged in as: **{st.session_state.current_user}**")
+        if st.button("Logout"):
+            st.session_state.current_user = None
+            st.rerun()
 
     st.info(
         "**Philosophy:** We do NOT chase high odds. We find 2-3 matches where "
@@ -434,7 +482,7 @@ def premium_bot_dashboard():
 
         # --- Step 1: Scrape Forebet with strict filters ---
         with st.spinner("🧠 Engine 1: Scanning Forebet with strict filters (65%+ only)..."):
-            raw_candidates = scrape_forebet_strict()
+            raw_candidates = scrape_forebet_strict(debug=debug_mode)
 
         if not raw_candidates:
             st.error(
