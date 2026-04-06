@@ -199,33 +199,43 @@ def score_pick(prediction_data, home_stats, away_stats, pick_side):
     score += s2
     breakdown["Form"] = f"Pick={pick_form} Opp={opp_form} → {s2:.1f} pts"
 
-    # ---- Signal 3: Attack Edge ----
-    def avg_scored(stats):
-        try:
-            return float(stats["goals"]["for"]["average"]["total"])
-        except (TypeError, KeyError):
-            return 1.2
+    # ---- Signal 3 & 4: Attack/Defence ----
+    # Only used when team stats are available (paid plan).
+    # On free plan, stats=None so we assign neutral scores (50) and redistribute
+    # the weight to Signal 1 (API probability) which is always available.
+    if pick_stats is not None and opp_stats is not None:
+        def avg_scored(stats):
+            try:
+                return float(stats["goals"]["for"]["average"]["total"])
+            except (TypeError, KeyError):
+                return 1.2
 
-    def avg_conceded(stats):
-        try:
-            return float(stats["goals"]["against"]["average"]["total"])
-        except (TypeError, KeyError):
-            return 1.2
+        def avg_conceded(stats):
+            try:
+                return float(stats["goals"]["against"]["average"]["total"])
+            except (TypeError, KeyError):
+                return 1.2
 
-    p_scored  = avg_scored(pick_stats)
-    o_concede = avg_conceded(opp_stats)
-    attack_edge = min(100, (p_scored / max(o_concede, 0.5) / 3) * 100)
-    s3 = attack_edge * W_ATTACK
-    score += s3
-    breakdown["Attack"] = f"{p_scored:.2f} scored vs {o_concede:.2f} conceded → {s3:.1f} pts"
+        p_scored    = avg_scored(pick_stats)
+        o_concede   = avg_conceded(opp_stats)
+        attack_edge = min(100, (p_scored / max(o_concede, 0.5) / 3) * 100)
+        s3 = attack_edge * W_ATTACK
+        score += s3
+        breakdown["Attack"] = f"{p_scored:.2f} scored vs {o_concede:.2f} conceded → {s3:.1f} pts"
 
-    # ---- Signal 4: Defence Edge ----
-    p_concede = avg_conceded(pick_stats)
-    o_scored  = avg_scored(opp_stats)
-    defence_score = min(100, (1 - p_concede / max(o_scored + p_concede, 1)) * 100)
-    s4 = defence_score * W_DEFENCE
-    score += s4
-    breakdown["Defence"] = f"{p_concede:.2f} conceded vs {o_scored:.2f} opp attack → {s4:.1f} pts"
+        p_concede     = avg_conceded(pick_stats)
+        o_scored      = avg_scored(opp_stats)
+        defence_score = min(100, (1 - p_concede / max(o_scored + p_concede, 1)) * 100)
+        s4 = defence_score * W_DEFENCE
+        score += s4
+        breakdown["Defence"] = f"{p_concede:.2f} conceded vs {o_scored:.2f} opp attack → {s4:.1f} pts"
+    else:
+        # No team stats — give neutral 50/100 for both signals so score stays meaningful
+        s3 = 50 * W_ATTACK
+        s4 = 50 * W_DEFENCE
+        score += s3 + s4
+        breakdown["Attack"]  = f"No stats data — neutral score used ({s3:.1f} pts)"
+        breakdown["Defence"] = f"No stats data — neutral score used ({s4:.1f} pts)"
 
     return round(score, 1), breakdown
 
@@ -275,9 +285,10 @@ def run_analysis(debug=False):
         )
         return [], []
 
-    # Free plan = 10 requests/min. Each match uses up to 4 calls.
-    # Cap at 8 matches max to stay safe, then add delay between each.
-    trusted = trusted[:8]
+    # Free plan = 10 requests/min.
+    # We make 2 calls per match (predictions + odds only — no team stats on free plan).
+    # 5 matches x 2 calls = 10 calls. With 13s delay = ~60s total. Stays under limit.
+    trusted = trusted[:5]
     total   = len(trusted)
 
     bar = st.progress(0, text="Analysing matches...")
@@ -287,10 +298,9 @@ def run_analysis(debug=False):
             (i + 1) / total,
             text=f"Checking ({i+1}/{total}): {f['teams']['home']['name']} vs {f['teams']['away']['name']}"
         )
-        # Respect the 10 req/min rate limit — wait 7s between matches
-        # Each match makes ~4 API calls, so 8 matches = ~32 calls over ~56 seconds = safe
+        # 13s between matches keeps us well under 10 req/min
         if i > 0:
-            time.sleep(7)
+            time.sleep(13)
 
         fid        = f["fixture"]["id"]
         league_id  = f["league"]["id"]
@@ -343,19 +353,16 @@ def run_analysis(debug=False):
             reject(f"Draw risk too high ({draw_pct}%)")
             continue
 
-        # --- Team stats ---
-        # get_team_stats returns a dict directly (or None if no data)
-        home_stats = get_team_stats(home_id, league_id)
-        away_stats = get_team_stats(away_id, league_id)
-
-        # --- Score ---
-        confidence, breakdown = score_pick(pred_data, home_stats, away_stats, pick_side)
+        # --- Score using predictions data only (no team stats = saves 2 API calls) ---
+        # On the free plan (10 req/min) we cannot afford team stats per match.
+        # score_pick handles None stats gracefully with neutral fallback values.
+        confidence, breakdown = score_pick(pred_data, None, None, pick_side)
 
         if confidence < MIN_CONFIDENCE:
             reject(f"Confidence too low ({confidence}/100)")
             continue
 
-        # --- Odds ---
+        # --- Odds (1 API call) ---
         odds_resp = get_odds(fid)
         odds      = extract_odds(odds_resp, pick_side)
 
@@ -363,12 +370,17 @@ def run_analysis(debug=False):
             reject(f"Odds {odds} outside range ({MIN_ODDS}–{MAX_ODDS})")
             continue
 
-        # --- Form strings for display ---
-        def form_str(stats):
+        # Pull form from predictions response (already fetched, no extra call needed)
+        teams_data = pred_data.get("teams", {})
+        def form_from_pred(team_key):
             try:
-                return (stats.get("form") or "")[-5:] or "N/A"
-            except Exception:
+                form = teams_data[team_key]["league"].get("form", "") or ""
+                return form[-5:] or "N/A"
+            except (KeyError, TypeError):
                 return "N/A"
+
+        home_form = form_from_pred("home")
+        away_form = form_from_pred("away")
 
         picks.append({
             "match":      f"{home_name} vs {away_name}",
@@ -382,8 +394,8 @@ def run_analysis(debug=False):
             "draw_pct":   draw_pct,
             "odds":       odds,
             "odds_str":   f"{odds:.2f}" if odds else "No odds data",
-            "home_form":  form_str(home_stats),
-            "away_form":  form_str(away_stats),
+            "home_form":  home_form,
+            "away_form":  away_form,
             "breakdown":  breakdown,
         })
 
