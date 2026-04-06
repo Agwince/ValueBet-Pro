@@ -5,6 +5,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import json
 import requests
+import time
 
 st.set_page_config(page_title="ValueBet Algorithm Pro", layout="wide", page_icon="🤖")
 
@@ -78,22 +79,36 @@ MAX_SLIP_PICKS   = 3     # Never combine more than 3
 # ==========================================
 BASE_URL = "https://v3.football.api-sports.io"
 
-def api_get(endpoint, params=None):
-    """Central API caller. Returns response list or [] on failure."""
-    try:
-        r = requests.get(
-            f"{BASE_URL}/{endpoint}",
-            headers={"x-apisports-key": API_KEY},
-            params=params,
-            timeout=15
-        )
-        data = r.json()
-        if data.get("errors"):
-            st.warning(f"API error on /{endpoint}: {data['errors']}")
-        return data.get("response", [])
-    except Exception as e:
-        st.warning(f"Request failed ({endpoint}): {e}")
-        return []
+def api_get(endpoint, params=None, _retries=2):
+    """
+    Central API caller with automatic rate-limit retry.
+    On a 429 / rateLimit error, waits 15s then retries up to _retries times.
+    Returns response list or [] on failure.
+    """
+    headers = {"x-apisports-key": API_KEY}
+    for attempt in range(_retries + 1):
+        try:
+            r    = requests.get(f"{BASE_URL}/{endpoint}", headers=headers, params=params, timeout=15)
+            data = r.json()
+            errors = data.get("errors", {})
+            # Rate limit hit — wait and retry
+            if errors and "rateLimit" in str(errors):
+                if attempt < _retries:
+                    time.sleep(15)
+                    continue
+                else:
+                    st.warning(f"Rate limit hit on /{endpoint} — skipping this match.")
+                    return []
+            if errors:
+                st.warning(f"API error on /{endpoint}: {errors}")
+            return data.get("response", [])
+        except Exception as e:
+            if attempt < _retries:
+                time.sleep(5)
+                continue
+            st.warning(f"Request failed ({endpoint}): {e}")
+            return []
+    return []
 
 
 @st.cache_data(ttl=3600)
@@ -260,13 +275,22 @@ def run_analysis(debug=False):
         )
         return [], []
 
+    # Free plan = 10 requests/min. Each match uses up to 4 calls.
+    # Cap at 8 matches max to stay safe, then add delay between each.
+    trusted = trusted[:8]
+    total   = len(trusted)
+
     bar = st.progress(0, text="Analysing matches...")
 
     for i, f in enumerate(trusted):
         bar.progress(
-            (i + 1) / len(trusted),
-            text=f"Checking: {f['teams']['home']['name']} vs {f['teams']['away']['name']}"
+            (i + 1) / total,
+            text=f"Checking ({i+1}/{total}): {f['teams']['home']['name']} vs {f['teams']['away']['name']}"
         )
+        # Respect the 10 req/min rate limit — wait 7s between matches
+        # Each match makes ~4 API calls, so 8 matches = ~32 calls over ~56 seconds = safe
+        if i > 0:
+            time.sleep(7)
 
         fid        = f["fixture"]["id"]
         league_id  = f["league"]["id"]
