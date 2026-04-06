@@ -5,444 +5,451 @@ import gspread
 from google.oauth2.service_account import Credentials
 import json
 import requests
-from curl_cffi import requests as curl_requests
-from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="ValueBet Algorithm Pro", layout="wide", page_icon="🤖")
 
 # ==========================================
-# 1. CONNECT TO GOOGLE SHEETS
+# 1. GOOGLE SHEETS CONNECTION
 # ==========================================
 @st.cache_resource
 def init_connection():
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
     creds_dict = json.loads(st.secrets["google_sheets_creds"])
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
     return client.open("ValueBet Database")
 
-sheet = init_connection()
-users_sheet = sheet.worksheet("Users")
+sheet         = init_connection()
+users_sheet   = sheet.worksheet("Users")
 pending_sheet = sheet.worksheet("Pending")
 try:
     results_sheet = sheet.worksheet("Results")
-except:
+except Exception:
     results_sheet = None
 
-if 'current_user' not in st.session_state:
+if "current_user" not in st.session_state:
     st.session_state.current_user = None
 
 # ==========================================
-# 2. CONSTANTS - TUNE THESE
+# 2. CONFIGURATION
 # ==========================================
 API_KEY = "3b0601a38ca386edc1a448c3fb760a6e"
 
-# THE CORE PHILOSOPHY: Only take bets where we have HIGH CERTAINTY
-# A 65%+ probability with odds between 1.30-1.90 is our sweet spot
-MIN_WIN_PROBABILITY = 65       # Minimum % - was 55, that's too low
-MAX_ODDS_FOR_SINGLE = 1.90    # Don't go above this - too risky
-MIN_ODDS_FOR_SINGLE = 1.25    # Don't go below this - not worth it
-TARGET_DAILY_COMBINED_ODDS = (2.0, 3.0)  # Our goal range
-
-# These league IDs are well-tracked by API-Football (reliable data)
+# Only analyse matches from these leagues.
+# These are well-tracked with reliable stats and low match-fixing risk.
 TRUSTED_LEAGUE_IDS = {
-    39,   # England Premier League
-    140,  # Spain La Liga
-    135,  # Italy Serie A
-    78,   # Germany Bundesliga
-    61,   # France Ligue 1
-    2,    # UEFA Champions League
-    3,    # UEFA Europa League
-    94,   # Portugal Primeira Liga
-    88,   # Netherlands Eredivisie
-    144,  # Belgium Pro League
-    203,  # Turkey Super Lig
-    179,  # Scotland Premier League
-    283,  # Kenya Premier League (local support)
+    39,   # England - Premier League
+    40,   # England - Championship
+    78,   # Germany - Bundesliga
+    79,   # Germany - 2. Bundesliga
+    61,   # France - Ligue 1
+    135,  # Italy - Serie A
+    140,  # Spain - La Liga
+    94,   # Portugal - Primeira Liga
+    88,   # Netherlands - Eredivisie
+    144,  # Belgium - Pro League
+    203,  # Turkey - Super Lig
+    179,  # Scotland - Premier League
+    2,    # UEFA - Champions League
+    3,    # UEFA - Europa League
+    848,  # UEFA - Conference League
+    283,  # Kenya - Premier League
 }
 
+# Scoring weights — must add up to 1.0
+W_API_PROB   = 0.40   # API-Football win probability
+W_FORM       = 0.25   # Recent form vs opponent form
+W_ATTACK     = 0.20   # Goals scored vs opponent defence
+W_DEFENCE    = 0.15   # Goals conceded vs opponent attack
+
+# Thresholds
+MIN_CONFIDENCE   = 65    # Our score out of 100 — raise to be stricter
+MIN_ODDS         = 1.25  # Below this, not worth the risk
+MAX_ODDS         = 1.90  # Above this, too uncertain for singles
+TARGET_ODDS_LOW  = 2.00  # Slip target (low end)
+TARGET_ODDS_HIGH = 3.20  # Slip target (high end)
+MAX_SLIP_PICKS   = 3     # Never combine more than 3
+
 # ==========================================
-# 3. ENGINE 1: FOREBET SCRAPER (STRICT MODE)
+# 3. API HELPER
 # ==========================================
-def scrape_forebet_strict(debug=False):
-    """
-    Scrape Forebet but ONLY keep matches that pass strict filters.
-    Returns list of candidate matches sorted by probability descending.
-    Set debug=True to show raw scraping diagnostics in the UI.
-    """
-    url = 'https://www.forebet.com/en/football-tips-and-predictions-for-today'
-    candidates = []
+BASE_URL = "https://v3.football.api-sports.io"
 
-    headers = {
-        'user-agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/122.0.0.0 Safari/537.36'
-        )
-    }
-
-    # --- Try multiple CSS class selectors since Forebet changes them ---
-    POSSIBLE_ROW_CLASSES = ['rcnt', 'tr_0', 'tr_1', 'schema', 'contentpanel']
-
+def api_get(endpoint, params=None):
+    """Central API caller. Returns response list or [] on failure."""
     try:
-        response = curl_requests.get(
-            url, headers=headers, impersonate="chrome110", timeout=25
+        r = requests.get(
+            f"{BASE_URL}/{endpoint}",
+            headers={"x-apisports-key": API_KEY},
+            params=params,
+            timeout=15
         )
-
-        if debug:
-            st.code(f"HTTP Status: {response.status_code}\nResponse length: {len(response.text)} chars")
-
-        if response.status_code != 200:
-            st.error(f"❌ Forebet returned status {response.status_code}. Site may be blocking the scraper.")
-            return []
-
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # Try each known class until we find match rows
-        match_rows = []
-        used_class = None
-        for cls in POSSIBLE_ROW_CLASSES:
-            rows = soup.find_all('div', class_=cls)
-            if rows:
-                match_rows = rows
-                used_class = cls
-                break
-
-        if debug:
-            st.code(
-                f"CSS class used: '{used_class}'\n"
-                f"Raw rows found: {len(match_rows)}\n\n"
-                f"--- First 2000 chars of HTML (for diagnosis) ---\n"
-                f"{response.text[:2000]}"
-            )
-
-        if not match_rows:
-            # Last resort: dump ALL div classes found so we can identify the right one
-            all_divs = soup.find_all('div', class_=True)
-            class_counts = {}
-            for d in all_divs:
-                for c in d.get('class', []):
-                    class_counts[c] = class_counts.get(c, 0) + 1
-            top_classes = sorted(class_counts.items(), key=lambda x: x[1], reverse=True)[:20]
-
-            if debug:
-                st.warning("⚠️ No match rows found with any known class. Top div classes on page:")
-                st.json({k: v for k, v in top_classes})
-            else:
-                st.error(
-                    "❌ Forebet's HTML structure has changed and the scraper can't find matches. "
-                    "Enable **Debug Mode** in the sidebar to diagnose, or check if forebet.com is accessible."
-                )
-            return []
-
-        for row in match_rows:
-            try:
-                home_team = row.find('span', class_='homeTeam')
-                away_team = row.find('span', class_='awayTeam')
-                fprc_div  = row.find('div', class_='fprc')
-
-                # Skip if any essential element is missing
-                if not home_team or not away_team or not fprc_div:
-                    continue
-
-                home_team = home_team.text.strip()
-                away_team = away_team.text.strip()
-
-                spans = fprc_div.find_all('span')
-                if len(spans) < 3:
-                    continue
-
-                # Parse probabilities (Home Win, Draw, Away Win)
-                try:
-                    home_prob = int(spans[0].text.strip())
-                    draw_prob = int(spans[1].text.strip())
-                    away_prob = int(spans[2].text.strip())
-                except ValueError:
-                    continue
-
-                # --- STRICT FILTER 1: Must have a clear winner ---
-                # We only back HOME WIN or AWAY WIN, never draws
-                # The leading side must have >= MIN_WIN_PROBABILITY
-                if home_prob >= MIN_WIN_PROBABILITY:
-                    pick_side = "home"
-                    pick_prob = home_prob
-                    pick_label = f"🏠 {home_team} to Win"
-                elif away_prob >= MIN_WIN_PROBABILITY:
-                    pick_side = "away"
-                    pick_prob = away_prob
-                    pick_label = f"✈️ {away_team} to Win"
-                else:
-                    continue  # Not confident enough — skip
-
-                # --- STRICT FILTER 2: Draw probability must be low ---
-                # High draw probability is a red flag even if one team leads
-                if draw_prob > 28:
-                    continue  # Too much draw risk
-
-                # --- Extract odds ---
-                pick_odds_raw = "N/A"
-                haodd_div = row.find('div', class_='haodd')
-                if haodd_div:
-                    odds_spans = [
-                        s.text.strip()
-                        for s in haodd_div.find_all('span')
-                        if s.text.strip()
-                    ]
-                    if len(odds_spans) >= 3:
-                        pick_odds_raw = odds_spans[0] if pick_side == "home" else odds_spans[-1]
-
-                # Convert American odds → Decimal
-                pick_odds_decimal = None
-                try:
-                    if pick_odds_raw not in ["N/A", "-", "no", ""]:
-                        val = float(pick_odds_raw.replace('+', ''))
-                        if val <= -100:
-                            pick_odds_decimal = round(1 - (100 / val), 2)
-                        elif val >= 100:
-                            pick_odds_decimal = round(1 + (val / 100), 2)
-                        else:
-                            pick_odds_decimal = round(float(pick_odds_raw), 2)
-                except (ValueError, ZeroDivisionError):
-                    pass
-
-                # --- STRICT FILTER 3: Odds must be in our value range ---
-                if pick_odds_decimal is None:
-                    continue
-                if not (MIN_ODDS_FOR_SINGLE <= pick_odds_decimal <= MAX_ODDS_FOR_SINGLE):
-                    continue
-
-                candidates.append({
-                    'home_team':    home_team,
-                    'away_team':    away_team,
-                    'home_prob':    home_prob,
-                    'draw_prob':    draw_prob,
-                    'away_prob':    away_prob,
-                    'pick_side':    pick_side,
-                    'pick_prob':    pick_prob,
-                    'pick_label':   pick_label,
-                    'odds':         pick_odds_decimal,
-                })
-
-            except Exception:
-                continue  # Never crash on a single row
-
+        data = r.json()
+        if data.get("errors"):
+            st.warning(f"API error on /{endpoint}: {data['errors']}")
+        return data.get("response", [])
     except Exception as e:
-        st.error(f"❌ Forebet scrape failed: {e}")
+        st.warning(f"Request failed ({endpoint}): {e}")
         return []
 
-    # Sort by probability descending — highest confidence first
-    candidates.sort(key=lambda x: x['pick_prob'], reverse=True)
-    return candidates
 
-
-# ==========================================
-# 4. ENGINE 2: API-FOOTBALL VALIDATOR
-# ==========================================
 @st.cache_data(ttl=3600)
 def get_todays_fixtures():
     today = datetime.now().strftime("%Y-%m-%d")
-    url = f"https://v3.football.api-sports.io/fixtures?date={today}"
-    headers = {'x-apisports-key': API_KEY}
-    try:
-        res = requests.get(url, headers=headers, timeout=10).json()
-        return res.get('response', [])
-    except Exception as e:
-        st.warning(f"API-Football fixtures fetch failed: {e}")
-        return []
+    return api_get("fixtures", {"date": today})
 
 
-def validate_with_api_football(candidate, all_fixtures):
+@st.cache_data(ttl=3600)
+def get_predictions(fixture_id):
+    return api_get("predictions", {"fixture": fixture_id})
+
+
+@st.cache_data(ttl=3600)
+def get_odds(fixture_id):
+    return api_get("odds", {"fixture": fixture_id, "bet": 1})
+
+
+@st.cache_data(ttl=86400)
+def get_team_stats(team_id, league_id, season=2024):
+    result = api_get("teams/statistics", {
+        "team": team_id, "league": league_id, "season": season
+    })
+    return result if result else None
+
+
+# ==========================================
+# 4. CONFIDENCE SCORING ENGINE
+# ==========================================
+def score_pick(prediction_data, home_stats, away_stats, pick_side):
     """
-    For a Forebet candidate, find it in API-Football and apply extra filters:
-    - Must be in a TRUSTED league
-    - Check head-to-head and recent form signals
-    Returns: dict with validation results, or None if disqualified.
+    Return a 0-100 confidence score and a breakdown dict.
+
+    4 signals:
+      1. API-Football predicted win % (40%)
+      2. Recent form relative to opponent (25%)
+      3. Attack edge: goals scored vs opponent defence (20%)
+      4. Defence edge: goals conceded vs opponent attack (15%)
     """
-    # Build a search keyword from the team name
-    search_name = candidate['home_team'].lower().replace('-', ' ')
-    words = [w for w in search_name.split() if len(w) > 3 and w not in {'city', 'town', 'united', 'sport', 'club'}]
-    keyword = max(words, key=len) if words else search_name[:5]
+    score = 0
+    breakdown = {}
 
-    # Find fixture in API-Football
-    fixture = None
-    for f in all_fixtures:
-        api_home = f['teams']['home']['name'].lower()
-        api_away = f['teams']['away']['name'].lower()
-        if keyword in api_home or keyword in api_away:
-            fixture = f
-            break
-
-    if not fixture:
-        return {'status': 'unverified', 'reason': 'Not in API database'}
-
-    # --- STRICT FILTER 4: Trusted league only ---
-    league_id = fixture['league']['id']
-    if league_id not in TRUSTED_LEAGUE_IDS:
-        return {'status': 'rejected', 'reason': f"Untrusted league (ID {league_id})"}
-
-    fixture_id = fixture['fixture']['id']
-    league_name = fixture['league']['name']
-
-    # Fetch predictions from API-Football
-    headers = {'x-apisports-key': API_KEY}
+    # ---- Signal 1: API Win Probability ----
+    key = "home" if pick_side == "home" else "away"
+    pct_str = (
+        prediction_data
+        .get("predictions", {})
+        .get("percent", {})
+        .get(key, "0%")
+    )
     try:
-        pred_res = requests.get(
-            f"https://v3.football.api-sports.io/predictions?fixture={fixture_id}",
-            headers=headers,
-            timeout=10
-        ).json()
-    except Exception:
-        return {'status': 'unverified', 'reason': 'Prediction fetch failed'}
-
-    if not pred_res.get('response'):
-        return {'status': 'unverified', 'reason': 'No prediction data'}
-
-    data = pred_res['response'][0]
-    predictions = data.get('predictions', {})
-    teams_data  = data.get('teams', {})
-
-    # Extract API win percentages
-    home_win_pct_str = predictions.get('percent', {}).get('home', '0%')
-    away_win_pct_str = predictions.get('percent', {}).get('away', '0%')
-    try:
-        api_home_pct = int(home_win_pct_str.replace('%', ''))
-        api_away_pct = int(away_win_pct_str.replace('%', ''))
+        api_pct = int(pct_str.replace("%", ""))
     except ValueError:
-        api_home_pct = api_away_pct = 0
+        api_pct = 0
 
-    # Extract recent form (last 5 games)
-    def get_form(team_key):
+    s1 = api_pct * W_API_PROB
+    score += s1
+    breakdown["API Win %"] = f"{api_pct}% → {s1:.1f} pts"
+
+    # ---- Signal 2: Form ----
+    def form_to_score(stats):
+        """Convert form string to 0-100 score."""
+        if not stats:
+            return 50
+        form = stats.get("form", "") or ""
+        recent = form[-5:]
+        if not recent:
+            return 50
+        wins   = recent.count("W")
+        losses = recent.count("L")
+        return max(0, min(100, 50 + (wins * 20) - (losses * 10)))
+
+    pick_stats = home_stats if pick_side == "home" else away_stats
+    opp_stats  = away_stats if pick_side == "home" else home_stats
+    pick_form  = form_to_score(pick_stats)
+    opp_form   = form_to_score(opp_stats)
+    relative   = (pick_form - opp_form + 100) / 2
+    s2 = relative * W_FORM
+    score += s2
+    breakdown["Form"] = f"Pick={pick_form} Opp={opp_form} → {s2:.1f} pts"
+
+    # ---- Signal 3: Attack Edge ----
+    def avg_scored(stats):
         try:
-            form = teams_data[team_key]['league'].get('form', '')
-            return form[-5:] if form else 'N/A'
-        except (KeyError, TypeError):
-            return 'N/A'
+            return float(stats["goals"]["for"]["average"]["total"])
+        except (TypeError, KeyError):
+            return 1.2
 
-    home_form = get_form('home')
-    away_form = get_form('away')
+    def avg_conceded(stats):
+        try:
+            return float(stats["goals"]["against"]["average"]["total"])
+        except (TypeError, KeyError):
+            return 1.2
 
-    # --- STRICT FILTER 5: API-Football must AGREE with Forebet ---
-    # If Forebet says home wins, API must also favour home (>= 50%)
-    if candidate['pick_side'] == 'home' and api_home_pct < 50:
-        return {
-            'status': 'rejected',
-            'reason': f"API disagrees (gives home only {api_home_pct}%)"
-        }
-    if candidate['pick_side'] == 'away' and api_away_pct < 50:
-        return {
-            'status': 'rejected',
-            'reason': f"API disagrees (gives away only {api_away_pct}%)"
-        }
+    p_scored  = avg_scored(pick_stats)
+    o_concede = avg_conceded(opp_stats)
+    attack_edge = min(100, (p_scored / max(o_concede, 0.5) / 3) * 100)
+    s3 = attack_edge * W_ATTACK
+    score += s3
+    breakdown["Attack"] = f"{p_scored:.2f} scored vs {o_concede:.2f} conceded → {s3:.1f} pts"
 
-    # --- STRICT FILTER 6: Form check ---
-    # Count recent wins in form string
-    pick_form = home_form if candidate['pick_side'] == 'home' else away_form
-    if pick_form != 'N/A':
-        wins_in_form = pick_form.count('W')
-        losses_in_form = pick_form.count('L')
-        # Reject if team lost 2 or more of last 5
-        if losses_in_form >= 2:
-            return {
-                'status': 'rejected',
-                'reason': f"Poor recent form: {pick_form}"
-            }
+    # ---- Signal 4: Defence Edge ----
+    p_concede = avg_conceded(pick_stats)
+    o_scored  = avg_scored(opp_stats)
+    defence_score = min(100, (1 - p_concede / max(o_scored + p_concede, 1)) * 100)
+    s4 = defence_score * W_DEFENCE
+    score += s4
+    breakdown["Defence"] = f"{p_concede:.2f} conceded vs {o_scored:.2f} opp attack → {s4:.1f} pts"
 
-    return {
-        'status': 'verified',
-        'league':     league_name,
-        'api_home_pct': api_home_pct,
-        'api_away_pct': api_away_pct,
-        'home_form':  home_form,
-        'away_form':  away_form,
-    }
+    return round(score, 1), breakdown
 
 
-# ==========================================
-# 5. SLIP BUILDER — TARGET 2.0 TO 3.0 ODDS
-# ==========================================
-def build_daily_slip(verified_picks):
-    """
-    Build ONE clean slip targeting 2.0 - 3.0 combined odds.
-    Strategy: start with the highest-confidence pick, add one more if needed.
-    Never force-add picks just to hit a number.
-    """
-    if not verified_picks:
-        return [], 1.0
-
-    lo, hi = TARGET_DAILY_COMBINED_ODDS
-
-    # Strategy A: Can a single pick already sit in our target range?
-    best = verified_picks[0]
-    if lo <= best['odds'] <= hi:
-        return [best], best['odds']
-
-    # Strategy B: Combine top 2 picks
-    if len(verified_picks) >= 2:
-        combined = verified_picks[0]['odds'] * verified_picks[1]['odds']
-        if lo <= combined <= hi:
-            return [verified_picks[0], verified_picks[1]], round(combined, 2)
-
-    # Strategy C: Combine top 3 picks (never go beyond 3)
-    if len(verified_picks) >= 3:
-        combined = verified_picks[0]['odds'] * verified_picks[1]['odds'] * verified_picks[2]['odds']
-        if combined <= hi + 0.5:  # Small tolerance
-            return [verified_picks[0], verified_picks[1], verified_picks[2]], round(combined, 2)
-
-    # If nothing fits, return just the single best pick
-    return [verified_picks[0]], verified_picks[0]['odds']
+def extract_odds(odds_response, pick_side):
+    """Pull decimal odds for home or away win from API odds response."""
+    target = "Home" if pick_side == "home" else "Away"
+    try:
+        for bookmaker in odds_response[0].get("bookmakers", []):
+            for bet in bookmaker.get("bets", []):
+                if bet.get("id") == 1:
+                    for v in bet.get("values", []):
+                        if v["value"] == target:
+                            return float(v["odd"])
+    except (IndexError, KeyError, TypeError, ValueError):
+        pass
+    return None
 
 
 # ==========================================
-# 6. USER MANAGEMENT (UNCHANGED)
+# 5. MAIN PIPELINE
 # ==========================================
-def get_all_users():    return users_sheet.get_all_records()
-def get_all_results():  return results_sheet.get_all_records() if results_sheet else []
+def run_analysis(debug=False):
+    picks    = []
+    rejected = []
 
-def check_expiry(user_record):
-    return datetime.now().date() <= datetime.strptime(
-        user_record['expiry'], "%Y-%m-%d"
-    ).date()
+    # --- Fetch all fixtures today ---
+    all_fixtures = get_todays_fixtures()
+    if not all_fixtures:
+        st.error("❌ API-Football returned no fixtures. Check your API key or internet connection.")
+        return [], []
+
+    # --- Filter: trusted leagues, not started ---
+    trusted = [
+        f for f in all_fixtures
+        if f["league"]["id"] in TRUSTED_LEAGUE_IDS
+        and f["fixture"]["status"]["short"] in ("NS", "TBD")
+    ]
+
+    if debug:
+        st.info(f"Total fixtures today: {len(all_fixtures)} | Trusted & not started: {len(trusted)}")
+
+    if not trusted:
+        st.warning(
+            "No fixtures in trusted leagues today (could be an international break "
+            "or mid-week gap). The system will have picks on matchdays."
+        )
+        return [], []
+
+    bar = st.progress(0, text="Analysing matches...")
+
+    for i, f in enumerate(trusted):
+        bar.progress(
+            (i + 1) / len(trusted),
+            text=f"Checking: {f['teams']['home']['name']} vs {f['teams']['away']['name']}"
+        )
+
+        fid        = f["fixture"]["id"]
+        league_id  = f["league"]["id"]
+        league     = f["league"]["name"]
+        home_name  = f["teams"]["home"]["name"]
+        away_name  = f["teams"]["away"]["name"]
+        home_id    = f["teams"]["home"]["id"]
+        away_id    = f["teams"]["away"]["id"]
+
+        # Kick-off time
+        try:
+            ko = datetime.fromisoformat(
+                f["fixture"]["date"].replace("Z", "+00:00")
+            ).strftime("%H:%M")
+        except Exception:
+            ko = "TBD"
+
+        def reject(reason):
+            rejected.append({
+                "Match":  f"{home_name} vs {away_name}",
+                "League": league,
+                "Reason": reason,
+            })
+
+        # --- Predictions ---
+        pred_resp = get_predictions(fid)
+        if not pred_resp:
+            reject("No prediction data")
+            continue
+
+        pred_data  = pred_resp[0]
+        winner_id  = pred_data.get("predictions", {}).get("winner", {}).get("id")
+
+        if winner_id == home_id:
+            pick_side = "home"
+        elif winner_id == away_id:
+            pick_side = "away"
+        else:
+            reject("API predicts draw or no winner")
+            continue
+
+        # Draw risk check
+        draw_str = pred_data.get("predictions", {}).get("percent", {}).get("draws", "0%")
+        try:
+            draw_pct = int(draw_str.replace("%", ""))
+        except ValueError:
+            draw_pct = 0
+
+        if draw_pct > 28:
+            reject(f"Draw risk too high ({draw_pct}%)")
+            continue
+
+        # --- Team stats ---
+        home_stats_list = get_team_stats(home_id, league_id)
+        away_stats_list = get_team_stats(away_id, league_id)
+
+        # api returns a list; we want the first item dict
+        home_stats = home_stats_list[0] if home_stats_list else None
+        away_stats = away_stats_list[0] if away_stats_list else None
+
+        # --- Score ---
+        confidence, breakdown = score_pick(pred_data, home_stats, away_stats, pick_side)
+
+        if confidence < MIN_CONFIDENCE:
+            reject(f"Confidence too low ({confidence}/100)")
+            continue
+
+        # --- Odds ---
+        odds_resp = get_odds(fid)
+        odds      = extract_odds(odds_resp, pick_side)
+
+        if odds is not None and not (MIN_ODDS <= odds <= MAX_ODDS):
+            reject(f"Odds {odds} outside range ({MIN_ODDS}–{MAX_ODDS})")
+            continue
+
+        # --- Form strings for display ---
+        def form_str(stats):
+            try:
+                return (stats.get("form") or "")[-5:] or "N/A"
+            except Exception:
+                return "N/A"
+
+        picks.append({
+            "match":      f"{home_name} vs {away_name}",
+            "home":       home_name,
+            "away":       away_name,
+            "league":     league,
+            "ko":         ko,
+            "pick_side":  pick_side,
+            "pick_label": f"🏠 {home_name} to Win" if pick_side == "home" else f"✈️ {away_name} to Win",
+            "confidence": confidence,
+            "draw_pct":   draw_pct,
+            "odds":       odds,
+            "odds_str":   f"{odds:.2f}" if odds else "No odds data",
+            "home_form":  form_str(home_stats),
+            "away_form":  form_str(away_stats),
+            "breakdown":  breakdown,
+        })
+
+        if debug:
+            with st.expander(f"🔬 {home_name} vs {away_name} — score breakdown"):
+                for k, v in breakdown.items():
+                    st.caption(f"**{k}:** {v}")
+                st.caption(f"**Total score:** {confidence}/100")
+
+    bar.empty()
+    picks.sort(key=lambda x: x["confidence"], reverse=True)
+    return picks, rejected
 
 
 # ==========================================
-# 7. UI — HOME / REGISTRATION
+# 6. SLIP BUILDER
+# ==========================================
+def build_slip(picks):
+    with_odds = [p for p in picks if p["odds"] is not None]
+
+    if not with_odds:
+        return ([picks[0]] if picks else []), None
+
+    # Strategy A: Single in range
+    if TARGET_ODDS_LOW <= with_odds[0]["odds"] <= TARGET_ODDS_HIGH:
+        return [with_odds[0]], round(with_odds[0]["odds"], 2)
+
+    # Strategy B: Double
+    if len(with_odds) >= 2:
+        c = with_odds[0]["odds"] * with_odds[1]["odds"]
+        if TARGET_ODDS_LOW <= c <= TARGET_ODDS_HIGH:
+            return [with_odds[0], with_odds[1]], round(c, 2)
+
+    # Strategy C: Treble (max)
+    if len(with_odds) >= 3:
+        c = with_odds[0]["odds"] * with_odds[1]["odds"] * with_odds[2]["odds"]
+        if c <= TARGET_ODDS_HIGH + 0.5:
+            return with_odds[:3], round(c, 2)
+
+    # Fallback: best single
+    return [with_odds[0]], round(with_odds[0]["odds"], 2)
+
+
+# ==========================================
+# 7. USER AUTH
+# ==========================================
+def get_all_users():   return users_sheet.get_all_records()
+def get_all_results(): return results_sheet.get_all_records() if results_sheet else []
+
+def check_expiry(u):
+    try:
+        return datetime.now().date() <= datetime.strptime(u["expiry"], "%Y-%m-%d").date()
+    except Exception:
+        return False
+
+
+# ==========================================
+# 8. HOME PAGE
 # ==========================================
 def home_and_register():
     st.title("🤖 ValueBet Algorithm Pro")
     tab_login, tab_verify = st.tabs(["🔓 Login & Join", "📊 Verified Results"])
 
     with tab_login:
-        st.success("🔥 Join 978+ Smart Bettors using mathematical edge. No more guessing.")
+        st.success("🔥 Join 978+ Smart Bettors using mathematical edge.")
         col1, col2 = st.columns(2)
 
         with col1:
             st.header("Login")
-            login_user = st.text_input("Username", key="log_user")
-            login_pass = st.text_input("Password", type="password", key="log_pass")
+            lu = st.text_input("Username", key="lu")
+            lp = st.text_input("Password", type="password", key="lp")
             if st.button("Log In"):
+                matched = False
                 for u in get_all_users():
                     if (
-                        str(u['username']) == login_user
-                        and str(u['password']) == login_pass
-                        and u['status'] == 'active'
+                        str(u["username"]) == lu
+                        and str(u["password"]) == lp
+                        and u["status"] == "active"
                         and check_expiry(u)
                     ):
-                        st.session_state.current_user = login_user
+                        st.session_state.current_user = lu
+                        matched = True
                         st.rerun()
-                st.error("Invalid credentials or expired account.")
+                if not matched:
+                    st.error("Invalid credentials or account expired.")
 
         with col2:
             st.header("Get Premium Access")
-            st.info("💰 Weekly: 500 KES | Monthly: 1,500 KES (Send to 0758275510)")
-            reg_user   = st.text_input("Choose Username")
-            mpesa_code = st.text_input("M-Pesa Code", max_chars=10)
+            st.info("💰 Weekly: 500 KES | Monthly: 1,500 KES\nSend M-Pesa to: **0758275510**")
+            ru = st.text_input("Choose Username")
+            mc = st.text_input("M-Pesa Code", max_chars=10)
             if st.button("Submit Payment", type="primary"):
-                pending_sheet = sheet.worksheet("Pending")
                 pending_sheet.append_row([
-                    reg_user, "password", "Monthly",
-                    mpesa_code.upper(), str(datetime.now().date())
+                    ru, "password", "Monthly", mc.upper(), str(datetime.now().date())
                 ])
-                st.success("✅ Submitted! Wait 10 mins for activation.")
+                st.success("✅ Submitted! You'll be activated within 10 minutes.")
 
     with tab_verify:
         st.header("📊 Verified Profit History")
@@ -450,146 +457,102 @@ def home_and_register():
         if data:
             st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
         else:
-            st.info("Verified results are being compiled.")
+            st.info("Results are being compiled. Check back soon.")
 
 
 # ==========================================
-# 8. UI — PREMIUM DASHBOARD
+# 9. PREMIUM DASHBOARD
 # ==========================================
-def premium_bot_dashboard():
+def premium_dashboard():
     st.title("📈 ValueBet God Mode")
 
-    # --- Sidebar controls ---
     with st.sidebar:
         st.header("⚙️ Settings")
-        debug_mode = st.toggle("🔬 Debug Mode", value=False,
-                               help="Shows raw scraping data to diagnose issues")
-        st.caption("Turn this on if you see 'No matches' and want to find out why.")
+        debug = st.toggle("🔬 Debug Mode", value=False,
+                          help="Shows confidence score breakdown per match")
         st.divider()
-        st.write(f"👤 Logged in as: **{st.session_state.current_user}**")
+        st.markdown(f"👤 Logged in as **{st.session_state.current_user}**")
+        st.caption("Powered by API-Football. No scraping. Data every day.")
         if st.button("Logout"):
             st.session_state.current_user = None
             st.rerun()
 
     st.info(
-        "**Philosophy:** We do NOT chase high odds. We find 2-3 matches where "
-        "the math is overwhelmingly in our favour, combine them to hit 2.0-3.0, "
-        "and repeat that daily. Consistency beats jackpots."
+        "**Strategy:** 1–3 picks per day. High confidence only. "
+        "Target 2.0–3.2 combined odds. Discipline beats gambling."
     )
     st.divider()
 
     if st.button("🔍 Generate Today's Slip", type="primary", use_container_width=True):
 
-        # --- Step 1: Scrape Forebet with strict filters ---
-        with st.spinner("🧠 Engine 1: Scanning Forebet with strict filters (65%+ only)..."):
-            raw_candidates = scrape_forebet_strict(debug=debug_mode)
+        picks, rejected = run_analysis(debug=debug)
 
-        if not raw_candidates:
+        if not picks:
             st.error(
-                "❌ No matches passed the strict probability filter today. "
-                "This is the system protecting your bankroll. **Do not bet today.**"
-            )
-            return
-
-        st.success(f"✅ {len(raw_candidates)} candidates passed initial filter. Verifying with API-Football...")
-
-        # --- Step 2: Validate each candidate with API-Football ---
-        all_fixtures = get_todays_fixtures()
-        verified_picks = []
-        rejected_log   = []
-
-        progress = st.progress(0, text="Validating candidates...")
-        for i, candidate in enumerate(raw_candidates):
-            progress.progress((i + 1) / len(raw_candidates), text=f"Checking: {candidate['home_team']} vs {candidate['away_team']}")
-            result = validate_with_api_football(candidate, all_fixtures)
-            candidate['validation'] = result
-
-            if result['status'] == 'verified':
-                candidate.update(result)
-                verified_picks.append(candidate)
-            else:
-                rejected_log.append({
-                    'Match': f"{candidate['home_team']} vs {candidate['away_team']}",
-                    'Reason': result['reason'],
-                    'Our Pick': candidate['pick_label'],
-                    'Forebet Prob': f"{candidate['pick_prob']}%",
-                })
-        progress.empty()
-
-        # --- Step 3: Build the daily slip ---
-        slip, slip_odds = build_daily_slip(verified_picks)
-
-        # =====================
-        # DISPLAY: Today's Slip
-        # =====================
-        st.header("🎯 Today's Recommended Slip")
-
-        if not slip:
-            st.warning(
-                "⚠️ No picks survived dual-engine verification today. "
-                "The system says: **skip today**. Your bankroll is safe."
+                "❌ No picks passed all filters today. "
+                "**Do not bet.** The system is protecting your bankroll. "
+                "More picks appear on active matchdays (Sat/Sun/midweek)."
             )
         else:
-            lo, hi = TARGET_DAILY_COMBINED_ODDS
-            if lo <= slip_odds <= hi:
-                st.success(f"✅ Slip is within target range: **{slip_odds:.2f} odds**")
+            slip, slip_odds = build_slip(picks)
+
+            # ---- Today's Slip ----
+            st.header("🎯 Today's Slip")
+
+            if slip_odds and TARGET_ODDS_LOW <= slip_odds <= TARGET_ODDS_HIGH:
+                st.success(f"✅ In target range: **{slip_odds:.2f} odds**")
+            elif slip_odds:
+                st.info(f"ℹ️ Best available: **{slip_odds:.2f} odds**")
             else:
-                st.info(f"ℹ️ Best available slip odds: **{slip_odds:.2f}** (slightly outside 2.0-3.0 target)")
+                st.warning("No bookmaker odds from API today — use as singles guide only.")
 
-            for idx, pick in enumerate(slip, 1):
+            for idx, p in enumerate(slip, 1):
                 with st.container(border=True):
-                    col_a, col_b, col_c = st.columns([3, 1, 1])
-                    with col_a:
-                        st.subheader(f"Pick {idx}: {pick['pick_label']}")
-                        st.caption(f"{pick['home_team']} vs {pick['away_team']}")
-                        if pick.get('league'):
-                            st.caption(f"🏆 League: {pick['league']}")
-                    with col_b:
-                        st.metric("Confidence", f"{pick['pick_prob']}%")
-                        st.metric("Draw Risk", f"{pick['draw_prob']}%")
-                    with col_c:
-                        st.metric("Odds", f"{pick['odds']:.2f}")
-                        form_key = 'home_form' if pick['pick_side'] == 'home' else 'away_form'
-                        if pick.get(form_key) and pick[form_key] != 'N/A':
-                            st.metric("Last 5", pick[form_key])
+                    ca, cb, cc = st.columns([3, 1, 1])
+                    with ca:
+                        st.subheader(f"Pick {idx}: {p['pick_label']}")
+                        st.caption(f"⏰ {p['ko']}  |  🏆 {p['league']}")
+                        st.caption(
+                            f"🏠 {p['home']} (form: {p['home_form']})  "
+                            f"vs  ✈️ {p['away']} (form: {p['away_form']})"
+                        )
+                    with cb:
+                        st.metric("Confidence", f"{p['confidence']}/100")
+                        st.metric("Draw Risk",   f"{p['draw_pct']}%")
+                    with cc:
+                        st.metric("Odds", p["odds_str"])
 
-            st.metric("🎟️ Combined Slip Odds", f"{slip_odds:.2f}")
+            if slip_odds:
+                st.metric("🎟️ Combined Odds", f"{slip_odds:.2f}")
 
-        # =====================
-        # DISPLAY: Full Verified Table
-        # =====================
-        if verified_picks:
+            # ---- All passing picks ----
             st.divider()
-            st.subheader("📋 All Verified Picks (Singles Reference)")
-            display_rows = []
-            for p in verified_picks:
-                display_rows.append({
-                    'Match':       f"{p['home_team']} vs {p['away_team']}",
-                    'Pick':        p['pick_label'],
-                    'Confidence':  f"{p['pick_prob']}%",
-                    'Draw Risk':   f"{p['draw_prob']}%",
-                    'Odds':        p['odds'],
-                    'League':      p.get('league', 'N/A'),
-                    'Home Form':   p.get('home_form', 'N/A'),
-                    'Away Form':   p.get('away_form', 'N/A'),
-                    'API Home%':   p.get('api_home_pct', 'N/A'),
-                    'API Away%':   p.get('api_away_pct', 'N/A'),
-                })
-            st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+            st.subheader(f"📋 All {len(picks)} Picks That Passed (Singles Reference)")
+            st.dataframe(
+                pd.DataFrame([{
+                    "Match":      p["match"],
+                    "Pick":       p["pick_label"],
+                    "Confidence": f"{p['confidence']}/100",
+                    "Draw Risk":  f"{p['draw_pct']}%",
+                    "Odds":       p["odds_str"],
+                    "League":     p["league"],
+                    "Kick-off":   p["ko"],
+                    "Home Form":  p["home_form"],
+                    "Away Form":  p["away_form"],
+                } for p in picks]),
+                use_container_width=True, hide_index=True
+            )
 
-        # =====================
-        # DISPLAY: Rejected (transparency)
-        # =====================
-        if rejected_log:
-            with st.expander(f"🗑️ {len(rejected_log)} matches rejected (tap to see why)"):
-                st.caption("Transparency log — these matches failed our strict dual-engine filter.")
-                st.dataframe(pd.DataFrame(rejected_log), use_container_width=True, hide_index=True)
+        # ---- Rejected log ----
+        if rejected:
+            with st.expander(f"🗑️ {len(rejected)} matches filtered out — tap to see why"):
+                st.dataframe(pd.DataFrame(rejected), use_container_width=True, hide_index=True)
 
 
 # ==========================================
-# 9. ROUTER
+# 10. ROUTER
 # ==========================================
 if st.session_state.current_user is None:
     home_and_register()
 else:
-    premium_bot_dashboard()
+    premium_dashboard()
