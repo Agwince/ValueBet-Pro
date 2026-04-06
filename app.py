@@ -114,10 +114,19 @@ def get_odds(fixture_id):
 
 @st.cache_data(ttl=86400)
 def get_team_stats(team_id, league_id, season=2024):
-    result = api_get("teams/statistics", {
-        "team": team_id, "league": league_id, "season": season
-    })
-    return result if result else None
+    """
+    Returns a single stats dict (not a list).
+    Tries current season then previous season as fallback.
+    """
+    for s in [season, season - 1]:
+        result = api_get("teams/statistics", {
+            "team": team_id, "league": league_id, "season": s
+        })
+        if isinstance(result, list) and result:
+            return result[0]
+        if isinstance(result, dict) and result:
+            return result
+    return None
 
 
 # ==========================================
@@ -311,12 +320,9 @@ def run_analysis(debug=False):
             continue
 
         # --- Team stats ---
-        home_stats_list = get_team_stats(home_id, league_id)
-        away_stats_list = get_team_stats(away_id, league_id)
-
-        # api returns a list; we want the first item dict
-        home_stats = home_stats_list[0] if home_stats_list else None
-        away_stats = away_stats_list[0] if away_stats_list else None
+        # get_team_stats returns a dict directly (or None if no data)
+        home_stats = get_team_stats(home_id, league_id)
+        away_stats = get_team_stats(away_id, league_id)
 
         # --- Score ---
         confidence, breakdown = score_pick(pred_data, home_stats, away_stats, pick_side)
